@@ -15,7 +15,7 @@ const ACTION_BADGE = {
   submitted:   'badge-accent',
 }
 
-const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund' }
+const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund', return: 'Return' }
 
 function Spinner({ size = 14, color = 'currentColor' }) {
   return (

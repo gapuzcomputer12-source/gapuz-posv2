@@ -78,7 +78,7 @@ export const useAuthStore = create((set, get) => ({
 // Fire-and-forget: a logging failure must never block the action it's
 // recording (a delete, a refund decision, etc.), so errors are just logged
 // to the console instead of surfacing to the user.
-function logActivity(action, entityType, entityLabel, details) {
+export function logActivity(action, entityType, entityLabel, details) {
   const { user } = useAuthStore.getState()
   const actorName = user?.user_metadata?.name || user?.email || 'Unknown'
   supabase.from('activity_log').insert({
@@ -192,14 +192,16 @@ export const useAppStore = create(
     (set, get) => ({
       theme: 'light',
       language: 'en',
+      revenueView: 'net',
       toggleTheme: () => {
         const next = get().theme === 'dark' ? 'light' : 'dark'
         document.documentElement.classList.toggle('light', next === 'light')
         set({ theme: next })
       },
       toggleLanguage: () => set(s => ({ language: s.language === 'en' ? 'fil' : 'en' })),
+      setRevenueView: (view) => set({ revenueView: view }),
     }),
-    { name: 'gapuz-app', partialize: s => ({ theme: s.theme, language: s.language }) }
+    { name: 'gapuz-app', partialize: s => ({ theme: s.theme, language: s.language, revenueView: s.revenueView }) }
   )
 )
 
@@ -256,20 +258,26 @@ export const useProductStore = create((set, get) => ({
     }
   },
 
+  // Atomic on the server (see deduct_stock in schema.sql) — locks each
+  // product row before computing its new stock, so two concurrent
+  // checkouts on the same product can't both read the same starting
+  // stock and oversell it. The authoritative new stock comes back from
+  // the RPC; we never compute stock - qty on the client.
   deductStock: async (items) => {
+    const { data, error } = await supabase.rpc('deduct_stock', {
+      items: items.map(i => ({ id: i.id, qty: i.qty })),
+    })
+    if (error) { console.error('deductStock failed:', error.message); return }
+    const byId = new Map(data.map(r => [r.out_id, r]))
     const zeroedOut = []
     set(s => ({
       products: s.products.map(p => {
+        const r = byId.get(p.id)
+        if (!r) return p
+        if (r.out_zeroed) zeroedOut.push({ name: p.name, category: p.category, barcode: p.barcode })
         const ci = items.find(i => i.id === p.id)
-        if (!ci) return p
-        const newStock = Math.max(0, p.stock - ci.qty)
-        if (p.stock > 0 && newStock === 0) zeroedOut.push({ name: p.name, category: p.category, barcode: p.barcode })
-        return { ...p, stock: newStock, sold: (p.sold || 0) + ci.qty }
+        return { ...p, stock: r.out_stock, sold: (p.sold || 0) + (ci?.qty || 0) }
       })
-    }))
-    await Promise.all(items.map(ci => {
-      const p = get().products.find(pp => pp.id === ci.id)
-      return p ? supabase.from('products').update({ stock: p.stock, sold: p.sold }).eq('product_id', ci.id) : null
     }))
     zeroedOut.forEach(notifyLowStock)
   },
@@ -282,6 +290,19 @@ export const useProductStore = create((set, get) => ({
       set(s => ({ products: s.products.map(p => p.id === id ? { ...p, stock: newStock } : p) }))
       logActivity('restocked', 'product', p?.name, { qty, newStock })
     }
+  },
+
+  // Patches local product stock from server-authoritative values already
+  // written by an RPC (e.g. approve_return) — no network call here, just
+  // reconciling client state with what the database already did.
+  applyStockUpdates: (updates) => {
+    if (!updates?.length) return
+    set(s => ({
+      products: s.products.map(p => {
+        const u = updates.find(x => x.id === p.id)
+        return u ? { ...p, stock: u.stock } : p
+      })
+    }))
   },
 }))
 
@@ -445,7 +466,7 @@ export const useTransactionStore = create((set, get) => ({
 }))
 
 // ── REFUND STORE ─────────────────────────────────────────────────
-const REFUND_SELECT = 'id:refund_id, transactionId:transaction_id, customerName:customer_name, reason, refundMethod:refund_method, notes, total, status, processedBy:processed_by, items, subtotal, vat, createdAt:created_at'
+const REFUND_SELECT = 'id:refund_id, transactionId:transaction_id, customerName:customer_name, reason, refundMethod:refund_method, notes, total, status, processedBy:processed_by, items, subtotal, vat, createdAt:created_at, processedAt:processed_at'
 
 export const useRefundStore = create((set, get) => ({
   refunds: [],
@@ -466,6 +487,8 @@ export const useRefundStore = create((set, get) => ({
       status: data.status,
       processed_by: data.processedBy,
       items: data.items,
+      subtotal: data.subtotal,
+      vat: data.vat,
     }
     const { data: inserted, error } = await supabase.from('refunds').insert(row).select(REFUND_SELECT).single()
     if (error || !inserted) return null
@@ -474,13 +497,19 @@ export const useRefundStore = create((set, get) => ({
     return inserted
   },
 
+  // Stamps processed_at (approval time, distinct from created_at) when a
+  // refund is approved — Gross vs Net sales reporting deducts an approved
+  // refund from revenue in the period it was approved, not the period of
+  // the original sale.
   updateRefund: async (id, data) => {
     const row = {}
     if ('status' in data) row.status = data.status
+    if (data.status === 'Approved') row.processed_at = new Date().toISOString()
     const { error } = await supabase.from('refunds').update(row).eq('refund_id', id)
     if (!error) {
       const r = get().refunds.find(rr => rr.id === id)
-      set(s => ({ refunds: s.refunds.map(r => r.id === id ? { ...r, ...data } : r) }))
+      const patch = row.processed_at ? { ...data, processedAt: row.processed_at } : data
+      set(s => ({ refunds: s.refunds.map(r => r.id === id ? { ...r, ...patch } : r) }))
       if (data.status === 'Approved') logActivity('approved', 'refund', `#${String(id).padStart(4, '0')}`, { total: r?.total })
       else if (data.status === 'Rejected') logActivity('rejected', 'refund', `#${String(id).padStart(4, '0')}`, { total: r?.total })
     }

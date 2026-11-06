@@ -1,10 +1,14 @@
 import { useState, useMemo, useEffect } from 'react'
-import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore } from '../store'
+import { useSearchParams } from 'react-router-dom'
+import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useAppStore } from '../store'
+import { useReturnStore } from '../store/useReturnStore'
 import { useT, peso, pesoCompact, getTier } from '../utils/helpers'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
+import { computeSalesMetrics } from '../utils/salesMetrics'
+import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import { CHART_COLORS, ACCENT, RED, YELLOW, PURPLE, SLATE } from '../utils/colors'
 import { BarChart3, Download, Trophy, TrendingDown, Archive, AlertTriangle, PackagePlus, AlertOctagon, Award, Star, ClipboardList, Clock, Package, CreditCard, Receipt } from 'lucide-react'
 import ProductThumb from '../components/ProductThumb'
+import SalesBreakdownCard from '../components/SalesBreakdownCard'
 
 const TabIcon = ({ children }) => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}>
@@ -37,8 +41,14 @@ export default function Reports(){
   const products     = useProductStore(s=>s.products)
   const customers    = useCustomerStore(s=>s.customers)
   const refunds      = useRefundStore(s=>s.refunds)
+  const returns      = useReturnStore(s=>s.returns)
+  const { theme }     = useAppStore()
+  const isLight       = theme === 'light'
   const t            = useT()
-  const [activeTab,  setActiveTab]  = useState('sales')
+  const [searchParams] = useSearchParams()
+  // Lets the Dashboard's "View all" / insight links deep-link here already on
+  // the right tab (e.g. /reports?tab=inventory).
+  const [activeTab,  setActiveTab]  = useState(() => searchParams.get('tab') || 'sales')
   const [period,     setPeriod]     = useState('Today')
   const [txPage,     setTxPage]     = useState(1)
   const TX_PAGE_SIZE = 7
@@ -51,31 +61,46 @@ export default function Reports(){
   const [refPage,    setRefPage]    = useState(1)
   const REF_PAGE_SIZE = 7
 
-  const filtered = useMemo(()=>{
-    const now = new Date()
+  const now = new Date()
+  const periodStart = useMemo(()=>{
     const start = new Date()
     if(period==='Today'){start.setHours(0,0,0,0)}
-    else if(period==='This Week'){start.setDate(now.getDate()-6);start.setHours(0,0,0,0)}
+    else if(period==='This Week'){start.setDate(start.getDate()-6);start.setHours(0,0,0,0)}
     else if(period==='This Month'){start.setDate(1);start.setHours(0,0,0,0)}
     else{start.setMonth(0,1);start.setHours(0,0,0,0)}
-    return transactions.filter(tx=>new Date(tx.createdAt)>=start)
-  },[transactions,period])
+    return start
+  },[period,now])
+  const filtered = useMemo(()=>transactions.filter(tx=>new Date(tx.createdAt)>=periodStart),[transactions,periodStart])
   const txTotalPages = Math.max(1, Math.ceil(filtered.length/TX_PAGE_SIZE))
   useEffect(()=>{ setTxPage(1) }, [period, filtered.length])
   useEffect(()=>{ if(txPage>txTotalPages) setTxPage(txTotalPages) }, [txTotalPages])
   const txPageItems = filtered.slice((txPage-1)*TX_PAGE_SIZE, txPage*TX_PAGE_SIZE)
 
-  // ── SALES ────────────────────────────────────────────────
-  const salesRev  = filtered.reduce((s,t)=>s+t.total,0)
-  const salesVat  = filtered.reduce((s,t)=>s+(t.vat||0),0)
-  const salesAvg  = filtered.length?Math.round(salesRev/filtered.length):0
+  // ── SALES — Gross vs Net (see src/utils/salesMetrics.js; the same helper
+  // backs Dashboard.jsx so the two pages' numbers always match) ──────────
+  const metrics   = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: periodStart, to: now }),[transactions,refunds,returns,periodStart,now])
+  const salesAvg  = metrics.transactionCount?Math.round(metrics.netSales/metrics.transactionCount):0
   const salesItems= filtered.reduce((s,t)=>s+(t.items||[]).reduce((a,i)=>a+i.qty,0),0)
   const payData   = useMemo(()=>{ const map={}; filtered.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})) },[filtered])
+  // Gross/net per bucket (hour for Today, day otherwise) — each bucket re-runs
+  // the shared computeSalesMetrics so a bucket's net always matches the
+  // period total's math, just scoped to a narrower [from,to) window.
   const salesChart= useMemo(()=>{
-    if(period==='Today') return Array.from({length:17},(_,i)=>{ const h=i+6; const hrs=filtered.filter(tx=>new Date(tx.createdAt).getHours()===h); return {label:`${h}:00`,value:hrs.reduce((s,t)=>s+t.total,0)} })
+    if(period==='Today') return Array.from({length:17},(_,i)=>{
+      const h=i+6
+      const from=new Date(); from.setHours(h,0,0,0)
+      const to=new Date(); to.setHours(h,59,59,999)
+      const m=computeSalesMetrics({ transactions, refunds, returns, from, to })
+      return {label:`${h}:00`,gross:m.grossSales,net:m.netSales,refunds:m.refundTotal+m.returnTotal}
+    })
     const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
-    return Array.from({length:7},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-(6-i)); d.setHours(0,0,0,0); const dt=filtered.filter(tx=>{const td=new Date(tx.createdAt);td.setHours(0,0,0,0);return td.getTime()===d.getTime()}); return {label:days[d.getDay()],value:dt.reduce((s,t)=>s+t.total,0)} })
-  },[filtered,period])
+    return Array.from({length:7},(_,i)=>{
+      const d=new Date(); d.setDate(d.getDate()-(6-i)); d.setHours(0,0,0,0)
+      const from=new Date(d); const to=new Date(d); to.setHours(23,59,59,999)
+      const m=computeSalesMetrics({ transactions, refunds, returns, from, to })
+      return {label:days[d.getDay()],gross:m.grossSales,net:m.netSales,refunds:m.refundTotal+m.returnTotal}
+    })
+  },[transactions,refunds,returns,period])
   const topProds  = useMemo(()=>{ const map={}; filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); return Object.values(map).sort((a,b)=>b.sold-a.sold).slice(0,5) },[filtered])
   const leastProds= useMemo(()=>{ const map={}; filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); products.forEach(p=>{ if(!map[p.name]) map[p.name]={name:p.name,sold:0,revenue:0} }); return Object.values(map).sort((a,b)=>a.sold-b.sold).slice(0,5) },[filtered,products])
 
@@ -83,7 +108,6 @@ export default function Reports(){
   const totalVal  = products.reduce((s,p)=>s+p.price*p.stock,0)
   const lowStock  = products.filter(p=>p.stock>0&&p.stock<=5&&p.category!=='Services')
   const outStock  = products.filter(p=>p.stock===0&&p.category!=='Services')
-  const now       = new Date()
   const oldStock  = products.filter(p=>{ const added=p.createdAt?new Date(p.createdAt):null; const lastSold=p.lastSoldAt?new Date(p.lastSoldAt):null; const daysSinceAdded=added?Math.floor((now-added)/(1000*60*60*24)):0; const daysSinceLastSold=lastSold?Math.floor((now-lastSold)/(1000*60*60*24)):999; return daysSinceAdded>90&&daysSinceLastSold>90 })
   const newStock  = products.filter(p=>{ const added=p.createdAt?new Date(p.createdAt):null; const days=added?Math.floor((now-added)/(1000*60*60*24)):999; return days<=30 })
   const newStockTotalPages = Math.max(1, Math.ceil(newStock.length/NEW_STOCK_PAGE_SIZE))
@@ -135,7 +159,25 @@ export default function Reports(){
   ].filter(r=>r.value>0)
 
   const exportCSV = () => {
-    const rows = filtered.map(tx=>[
+    const approvedDate = r => new Date(r.processedAt || r.createdAt)
+    const approvedRefundsInPeriod = refunds.filter(r => r.status==='Approved' && approvedDate(r)>=periodStart && approvedDate(r)<=now)
+    const approvedReturnsInPeriod = returns.filter(r => r.status==='Approved' && r.method!=='Exchange' && approvedDate(r)>=periodStart && approvedDate(r)<=now)
+
+    const summary = [
+      'GAPUZ POS — SALES SUMMARY',
+      `Period,${period}`,
+      `Gross Sales,${metrics.grossSales.toFixed(2)}`,
+      `Refunds,${metrics.refundTotal.toFixed(2)}`,
+      `Returns,${metrics.returnTotal.toFixed(2)}`,
+      `Net Sales,${metrics.netSales.toFixed(2)}`,
+      `Gross VAT,${metrics.grossVat.toFixed(2)}`,
+      `Refunded VAT,${metrics.refundedVat.toFixed(2)}`,
+      `Net VAT,${metrics.netVat.toFixed(2)}`,
+      `Refund Rate,${metrics.refundRate.toFixed(1)}%`,
+      '',
+    ]
+
+    const txnRows = filtered.map(tx=>[
       String(tx.id).padStart(4,'0'),
       new Date(tx.createdAt).toLocaleString('en-PH'),
       tx.customerName||'Walk-in',
@@ -147,11 +189,40 @@ export default function Reports(){
       tx.total,
       tx.status||'Completed'
     ])
-    const csv = ['TXN#,Date & Time,Customer,Items,Payment,Subtotal,Discount,VAT,Total,Status',...rows.map(r=>r.join(','))].join('\n')
+    const txnSection = [
+      'TRANSACTIONS',
+      'TXN#,Date & Time,Customer,Items,Payment,Subtotal,Discount,VAT,Total,Status',
+      ...txnRows.map(r=>r.join(',')),
+      '',
+    ]
+
+    const approvedRows = [
+      ...approvedRefundsInPeriod.map(r=>['REFUND',`#${String(r.id).padStart(4,'0')}`,`#${String(r.transactionId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),r.total.toFixed(2)]),
+      ...approvedReturnsInPeriod.map(r=>['RETURN',`RTN-${String(r.id).padStart(4,'0')}`,`#${String(r.txnId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),r.total.toFixed(2)]),
+    ]
+    const approvedSection = [
+      'APPROVED REFUNDS/RETURNS',
+      'Type,#,Original TXN#,Approval Date,Amount',
+      ...approvedRows.map(r=>r.join(',')),
+    ]
+
+    const csv = [...summary, ...txnSection, ...approvedSection].join('\n')
     const a = document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download=`gapuz-sales-report-${period.toLowerCase().replace(' ','-')}.csv`; a.click()
   }
 
   const Tip=({active,payload,label})=>{ if(!active||!payload?.length) return null; return <div className="card" style={{padding:'8px 12px',fontSize:12}}><div style={{color:'var(--text3)',marginBottom:3}}>{label}</div><div style={{fontFamily:"'JetBrains Mono',monospace",color:'var(--accent)'}}>{peso(payload[0].value)}</div></div> }
+  const GrossNetTip=({active,payload,label})=>{
+    if(!active||!payload?.length) return null
+    const d=payload[0].payload
+    return (
+      <div className="card" style={{padding:'8px 12px',fontSize:11.5}}>
+        <div style={{color:'var(--text3)',marginBottom:4}}>{label}</div>
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,color:'var(--text3)'}}><span>Gross</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(d.gross)}</span></div>
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,color:'var(--red)'}}><span>Refunds</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>−{peso(d.refunds)}</span></div>
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,color:'var(--accent)',fontWeight:700}}><span>Net</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(d.net)}</span></div>
+      </div>
+    )
+  }
 
   return(
     <div style={{height:'100%',overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:16}}>
@@ -186,25 +257,32 @@ export default function Reports(){
 
       {/* ══════════ SALES REPORT ══════════ */}
       {activeTab==='sales' && <>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:12}}>
-          <StatCard label="Total Revenue"  value={peso(salesRev)}     color="var(--accent)"/>
-          <StatCard label="Transactions"   value={filtered.length}    color="var(--green)"/>
-          <StatCard label="Total VAT"      value={peso(salesVat)}     color="var(--purple)"/>
-          <StatCard label="Average Order"  value={peso(salesAvg)}     color="var(--yellow)"/>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:12}}>
+          <StatCard label="Gross Sales"     value={peso(metrics.grossSales)}                   color="var(--accent)"/>
+          <StatCard label="Refunds"         value={`−${peso(metrics.refundTotal+metrics.returnTotal)}`} color="var(--red)"/>
+          <StatCard label="Net Sales"       value={peso(metrics.netSales)}                      color="var(--accent)"/>
+          <StatCard label="Net VAT"         value={peso(metrics.netVat)}                        color="var(--purple)"/>
+          <StatCard label="Transactions"    value={metrics.transactionCount}                    color="var(--green)"/>
+          <StatCard label="Average Order"   value={peso(salesAvg)}                              color="var(--yellow)" sub="Net-based"/>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(340px,1fr))',gap:14}}>
           <div className="card" style={{padding:20}}>
-            <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Revenue Chart</div>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Revenue Chart — Gross vs Net</div>
             <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={salesChart} barSize={period==='Today'?12:24}>
+              <ComposedChart data={salesChart}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false}/>
                 <XAxis dataKey="label" tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false}/>
                 <YAxis tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?Math.round(v/1000)+'k':v}/>
-                <Tooltip content={<Tip/>} cursor={{fill:'rgba(255,255,255,0.03)'}}/>
-                <Bar dataKey="value" fill={ACCENT} radius={[4,4,0,0]}/>
-              </BarChart>
+                <Tooltip content={<GrossNetTip/>} cursor={{fill:'rgba(255,255,255,0.03)'}}/>
+                <Legend iconSize={8} wrapperStyle={{fontSize:11}}/>
+                <Line type="monotone" dataKey="gross" name="Gross" stroke={SLATE} strokeWidth={1.5} strokeDasharray="4 3" dot={false}/>
+                <Line type="monotone" dataKey="net" name="Net" stroke={ACCENT} strokeWidth={2} dot={false}/>
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
+          <SalesBreakdownCard metrics={metrics} isLight={isLight}/>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(340px,1fr))',gap:14}}>
           <div className="card" style={{padding:20}}>
             <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Payment Methods</div>
             <ResponsiveContainer width="100%" height={180}>

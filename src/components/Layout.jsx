@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Pencil } from 'lucide-react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore, useAppStore, useProductStore, useCustomerStore, useTransactionStore, useRefundStore, useHoldStore, useCategoryStore, useStaffStore, useActivityLogStore } from '../store'
+import { useReturnStore } from '../store/useReturnStore'
 import { useT, useBreakpoint } from '../utils/helpers'
 import { useToast } from '../utils/toast'
 
@@ -53,8 +54,10 @@ export default function Layout() {
   },[])
   useEffect(()=>{
     const onClick = (e) => { if(profileRef.current && !profileRef.current.contains(e.target)) setProfileMenuOpen(false) }
+    const onKey = (e) => { if(e.key === 'Escape') setProfileMenuOpen(false) }
     document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKey) }
   },[])
 
   const toggleFullscreen = () => {
@@ -88,6 +91,7 @@ export default function Layout() {
     useCustomerStore.getState().fetchCustomers()
     useTransactionStore.getState().fetchTransactions()
     useRefundStore.getState().fetchRefunds()
+    useReturnStore.getState().fetchReturns()
     useHoldStore.getState().fetchHolds()
     useCategoryStore.getState().fetchCategories()
     useStaffStore.getState().fetchStaff()

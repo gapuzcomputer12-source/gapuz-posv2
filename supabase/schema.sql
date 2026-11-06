@@ -116,7 +116,27 @@ CREATE TABLE refunds (
   subtotal       NUMERIC(10,2) DEFAULT 0,
   vat            NUMERIC(10,2) DEFAULT 0,
   notes          TEXT,
-  created_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  created_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  processed_at   TIMESTAMP WITH TIME ZONE
+);
+
+-- 6b. RETURNS (merchandise returns — mirrors refunds; admin approval
+--     restocks items, same as a refund, but isn't necessarily a cash refund)
+CREATE TABLE returns (
+  return_id      SERIAL PRIMARY KEY,
+  transaction_id INTEGER REFERENCES transactions(transaction_id) ON DELETE SET NULL,
+  customer_name  VARCHAR(100) DEFAULT 'Walk-in',
+  reason         VARCHAR(150),
+  method         VARCHAR(30),
+  notes          TEXT,
+  subtotal       NUMERIC(10,2) DEFAULT 0,
+  vat            NUMERIC(10,2) DEFAULT 0,
+  total          NUMERIC(10,2) NOT NULL DEFAULT 0,
+  status         VARCHAR(20)  NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Approved','Rejected')),
+  processed_by   VARCHAR(100),
+  items          JSONB,
+  created_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  processed_at   TIMESTAMP WITH TIME ZONE
 );
 
 -- 7. HOLDS (parked carts)
@@ -170,6 +190,7 @@ ALTER TABLE customers         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transactions      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transaction_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE refunds           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE returns           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE holds             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE categories        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE activity_log      ENABLE ROW LEVEL SECURITY;
@@ -180,6 +201,7 @@ CREATE POLICY "Allow authenticated read" ON customers FOR SELECT TO authenticate
 CREATE POLICY "Allow authenticated read" ON transactions FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated read" ON transaction_items FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated read" ON refunds FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Allow authenticated read" ON returns FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated read" ON holds FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated read" ON categories FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Admins can read activity log" ON activity_log FOR SELECT TO authenticated
@@ -188,22 +210,45 @@ CREATE POLICY "Admins can read activity log" ON activity_log FOR SELECT TO authe
 CREATE POLICY "Allow authenticated insert" ON transactions FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY "Allow authenticated insert" ON transaction_items FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY "Allow authenticated insert" ON refunds FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Allow authenticated insert" ON returns FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY "Allow authenticated insert" ON customers FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "Allow authenticated insert" ON products FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY "Allow authenticated insert" ON holds FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "Allow authenticated insert" ON categories FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY "Allow authenticated insert" ON activity_log FOR INSERT TO authenticated WITH CHECK (true);
+
+-- Products and categories: only admins add/remove products or manage
+-- categories (both are admin-only pages in the app). Product UPDATE is
+-- deliberately left open below — cashiers need it to deduct stock at
+-- checkout.
+CREATE POLICY "Admins can insert products" ON products FOR INSERT TO authenticated
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+CREATE POLICY "Admins can insert categories" ON categories FOR INSERT TO authenticated
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
 
 CREATE POLICY "Allow authenticated update" ON products FOR UPDATE TO authenticated USING (true);
 CREATE POLICY "Allow authenticated update" ON customers FOR UPDATE TO authenticated USING (true);
-CREATE POLICY "Allow authenticated update" ON refunds FOR UPDATE TO authenticated USING (true);
-CREATE POLICY "Allow authenticated update" ON transactions FOR UPDATE TO authenticated USING (true);
-CREATE POLICY "Allow authenticated update" ON categories FOR UPDATE TO authenticated USING (true);
 
-CREATE POLICY "Allow authenticated delete" ON products FOR DELETE TO authenticated USING (true);
+-- Refunds/returns/transactions: any signed-in user can submit a refund or
+-- return request, but only an admin can approve/reject one or mark a sale
+-- as refunded.
+CREATE POLICY "Admins can update refunds" ON refunds FOR UPDATE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'))
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+CREATE POLICY "Admins can update returns" ON returns FOR UPDATE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'))
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+CREATE POLICY "Admins can update transactions" ON transactions FOR UPDATE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'))
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+CREATE POLICY "Admins can update categories" ON categories FOR UPDATE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'))
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+
+CREATE POLICY "Admins can delete products" ON products FOR DELETE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
 CREATE POLICY "Allow authenticated delete" ON holds FOR DELETE TO authenticated USING (true);
 CREATE POLICY "Allow authenticated delete" ON customers FOR DELETE TO authenticated USING (true);
-CREATE POLICY "Allow authenticated delete" ON categories FOR DELETE TO authenticated USING (true);
+CREATE POLICY "Admins can delete categories" ON categories FOR DELETE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
 
 -- INDEXES
 CREATE INDEX idx_transactions_customer   ON transactions(customer_id);
@@ -212,6 +257,8 @@ CREATE INDEX idx_transaction_items_txn   ON transaction_items(transaction_id);
 CREATE INDEX idx_transaction_items_prod  ON transaction_items(product_id);
 CREATE INDEX idx_refunds_transaction     ON refunds(transaction_id);
 CREATE INDEX idx_refunds_status          ON refunds(status);
+CREATE INDEX idx_returns_transaction     ON returns(transaction_id);
+CREATE INDEX idx_returns_status          ON returns(status);
 CREATE INDEX idx_products_category       ON products(category);
 CREATE INDEX idx_activity_log_created_at ON activity_log(created_at);
 
@@ -257,3 +304,112 @@ SELECT c.customer_id, c.name, c.points, c.purchases, c.total_spent,
        END AS loyalty_tier
 FROM customers c
 ORDER BY c.points DESC;
+
+-- FUNCTIONS
+-- Atomic stock deduction at checkout — locks each product row
+-- (SELECT ... FOR UPDATE) before computing its new stock, so two
+-- concurrent checkouts on the same product queue instead of racing and
+-- overselling. Runs with the calling user's own privileges (no SECURITY
+-- DEFINER), so the normal products RLS policies still apply.
+CREATE OR REPLACE FUNCTION deduct_stock(items jsonb)
+RETURNS TABLE (out_id int, out_stock int, out_zeroed boolean)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  item   jsonb;
+  v_id   int;
+  v_qty  int;
+  v_prev int;
+  v_next int;
+BEGIN
+  FOR item IN SELECT * FROM jsonb_array_elements(items)
+  LOOP
+    v_id  := (item->>'id')::int;
+    v_qty := (item->>'qty')::int;
+
+    SELECT stock INTO v_prev FROM products WHERE product_id = v_id FOR UPDATE;
+    IF v_prev IS NULL THEN
+      CONTINUE;
+    END IF;
+
+    v_next := GREATEST(v_prev - v_qty, 0);
+
+    UPDATE products SET stock = v_next, sold = sold + v_qty WHERE product_id = v_id;
+
+    out_id     := v_id;
+    out_stock  := v_next;
+    out_zeroed := (v_prev > 0 AND v_next = 0);
+    RETURN NEXT;
+  END LOOP;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION deduct_stock(jsonb) TO authenticated;
+
+-- Atomic return approval + restock — flips a return's status to 'Approved'
+-- and restocks every item it covers as one transaction, so a dropped
+-- connection can't leave the status "Approved" with only some items
+-- restocked. Locks the return row first, so a double-click (two
+-- overlapping calls) only restocks once: the second call sees the status
+-- is no longer 'Pending' and reports out_already = true without touching
+-- stock. No SECURITY DEFINER, same as deduct_stock, so the normal
+-- admin-only "Admins can update returns" RLS policy still applies.
+-- Also stamps processed_at on approval (see add_processed_at.sql) — Gross vs
+-- Net sales reporting deducts an approved return from revenue in the period
+-- it was approved, not the period of the original sale, so it needs this
+-- timestamp distinct from created_at.
+CREATE OR REPLACE FUNCTION approve_return(p_return_id int)
+RETURNS TABLE (out_status text, out_already boolean, out_product_id int, out_stock int, out_processed_at timestamptz)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_status text;
+  v_items  jsonb;
+  item     jsonb;
+  v_id     int;
+  v_qty    int;
+  v_next   int;
+  v_any    boolean := false;
+  v_processed_at timestamptz;
+BEGIN
+  SELECT status, items INTO v_status, v_items
+  FROM returns WHERE return_id = p_return_id FOR UPDATE;
+
+  IF v_status IS NULL THEN
+    RAISE EXCEPTION 'Return % not found', p_return_id;
+  END IF;
+
+  IF v_status <> 'Pending' THEN
+    SELECT processed_at INTO v_processed_at FROM returns WHERE return_id = p_return_id;
+    out_status := v_status; out_already := true; out_product_id := NULL; out_stock := NULL; out_processed_at := v_processed_at;
+    RETURN NEXT;
+    RETURN;
+  END IF;
+
+  v_processed_at := NOW();
+  UPDATE returns SET status = 'Approved', processed_at = v_processed_at WHERE return_id = p_return_id;
+
+  FOR item IN SELECT * FROM jsonb_array_elements(COALESCE(v_items, '[]'::jsonb))
+  LOOP
+    v_id  := (item->>'id')::int;
+    v_qty := COALESCE((item->>'returnQty')::int, (item->>'qty')::int, 1);
+
+    UPDATE products SET stock = stock + v_qty
+    WHERE product_id = v_id
+    RETURNING stock INTO v_next;
+
+    IF FOUND THEN
+      out_status := 'Approved'; out_already := false; out_product_id := v_id; out_stock := v_next; out_processed_at := v_processed_at;
+      RETURN NEXT;
+      v_any := true;
+    END IF;
+  END LOOP;
+
+  IF NOT v_any THEN
+    out_status := 'Approved'; out_already := false; out_product_id := NULL; out_stock := NULL; out_processed_at := v_processed_at;
+    RETURN NEXT;
+  END IF;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION approve_return(int) TO authenticated;

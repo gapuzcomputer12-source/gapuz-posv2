@@ -1,10 +1,14 @@
 import { useMemo, useState, useEffect } from 'react'
-import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
+import { ComposedChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
+import { startOfDay, endOfDay, subDays, startOfMonth, startOfYear } from 'date-fns'
 import { Trophy, TrendingDown, AlertTriangle, Ban, CheckCircle2, Package, Wallet, Award, Star, RefreshCw, ClipboardList, Hand } from 'lucide-react'
-import { useTransactionStore, useProductStore, useAuthStore, useCustomerStore, useRefundStore } from '../store'
+import { useTransactionStore, useProductStore, useAuthStore, useCustomerStore, useRefundStore, useAppStore } from '../store'
+import { useReturnStore } from '../store/useReturnStore'
 import { useT, peso, pesoCompact, getTier } from '../utils/helpers'
+import { computeSalesMetrics, getDailySeries } from '../utils/salesMetrics'
 import { CHART_COLORS, ACCENT, RED, YELLOW, PURPLE, SLATE } from '../utils/colors'
 import ProductThumb from '../components/ProductThumb'
+import SalesBreakdownCard from '../components/SalesBreakdownCard'
 
 const COLORS = CHART_COLORS
 
@@ -32,6 +36,41 @@ function MetricCard({ label, value, sub, subUp, color }) {
   )
 }
 
+// Revenue metric card with an admin-only Net/Gross toggle. Cashiers always
+// see Net (the money actually kept) with no breakdown line — admins can
+// flip to Gross and see what was deducted underneath.
+function RevenueCard({ label, isAdmin, revenueView, setRevenueView, value, grossSales, deducted, revChange }) {
+  const t = useT()
+  return (
+    <div className="card" style={{padding:20,borderTop:'2px solid var(--accent)'}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8,gap:8}}>
+        <div style={{fontSize:10,color:'var(--text3)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.5px'}}>{label}</div>
+        {isAdmin && (
+          <div style={{display:'flex',background:'var(--bg3)',borderRadius:99,padding:2,gap:2,flexShrink:0}}>
+            {['net','gross'].map(v=>(
+              <button key={v} onClick={()=>setRevenueView(v)} style={{
+                padding:'2px 9px',borderRadius:99,border:'none',fontSize:9.5,fontWeight:700,cursor:'pointer',fontFamily:'inherit',
+                background: revenueView===v ? 'var(--accent)' : 'transparent',
+                color: revenueView===v ? '#0a0a0a' : 'var(--text3)',
+                transition:'all .15s',
+              }}>{v==='net'?t('net'):t('gross')}</button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:24,fontWeight:700,marginBottom:5,color:'var(--accent)'}}>{pesoCompact(value)}</div>
+      <div style={{fontSize:11,color:revChange>=0?'var(--green)':'var(--text3)',marginBottom:isAdmin?4:0}}>{revChange>=0?'▲ +':'▼ '}{revChange}% {t('vs_yesterday')}</div>
+      {isAdmin && (
+        <div style={{fontSize:10.5,color:'var(--text3)'}}>
+          {deducted>0
+            ? <>{t('gross')} {peso(grossSales)} · <span style={{color:'var(--red)'}}>{t('refunds')} −{peso(deducted)}</span></>
+            : t('no_refunds_today')}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StatCard({ label, value, color }) {
   return (
     <div className="card" style={{padding:16,borderTop:`2px solid ${color}`}}>
@@ -46,8 +85,11 @@ export default function Dashboard() {
   const products     = useProductStore(s=>s.products)
   const customers    = useCustomerStore(s=>s.customers)
   const refunds      = useRefundStore(s=>s.refunds)
+  const returns      = useReturnStore(s=>s.returns)
   const { user, role } = useAuthStore()
+  const { revenueView, setRevenueView, theme } = useAppStore()
   const isAdmin      = role === 'admin'
+  const isLight      = theme === 'light'
   const TABS         = useMemo(()=>ALL_TABS.filter(tab=>!tab.adminOnly||isAdmin),[isAdmin])
   const t            = useT()
   const [activeTab,  setActiveTab] = useState('overview')
@@ -58,20 +100,23 @@ export default function Dashboard() {
   const TX_PAGE_SIZE    = 7
 
   const now   = new Date()
-  const today = new Date(now); today.setHours(0,0,0,0)
+  const today = startOfDay(now)
 
   // ── TODAY METRICS ─────────────────────────────────────────
   const todayTxns = useMemo(()=>transactions.filter(tx=>{ const d=new Date(tx.createdAt); d.setHours(0,0,0,0); return d.getTime()===today.getTime() }),[transactions])
-  const revenue   = todayTxns.reduce((s,t)=>s+t.total,0)
   const itemsSold = todayTxns.reduce((s,t)=>s+(t.items||[]).reduce((a,i)=>a+i.qty,0),0)
-  const aov       = todayTxns.length?Math.round(revenue/todayTxns.length):0
-  const yest      = new Date(today); yest.setDate(yest.getDate()-1)
-  const yesterdayRev = transactions.filter(tx=>{ const d=new Date(tx.createdAt); d.setHours(0,0,0,0); return d.getTime()===yest.getTime() }).reduce((s,t)=>s+t.total,0)
-  const revChange = yesterdayRev?Math.round(((revenue-yesterdayRev)/yesterdayRev)*100):0
+  const todayMetrics = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: today, to: now }),[transactions,refunds,returns,today,now])
+  const yest      = subDays(today,1)
+  const yestMetrics = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: yest, to: endOfDay(yest) }),[transactions,refunds,returns,yest])
+  const effectiveView = isAdmin ? revenueView : 'net'
+  const revenueValue = effectiveView==='gross' ? todayMetrics.grossSales : todayMetrics.netSales
+  const yesterdayValue = effectiveView==='gross' ? yestMetrics.grossSales : yestMetrics.netSales
+  const aov       = todayTxns.length?Math.round(todayMetrics.netSales/todayTxns.length):0
+  const revChange = yesterdayValue?Math.round(((revenueValue-yesterdayValue)/yesterdayValue)*100):0
 
   // ── CHARTS ────────────────────────────────────────────────
   const weekData  = useMemo(()=>{ const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return Array.from({length:7},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-(6-i)); d.setHours(0,0,0,0); const dt=transactions.filter(tx=>{ const td=new Date(tx.createdAt); td.setHours(0,0,0,0); return td.getTime()===d.getTime() }); return {label:days[d.getDay()],value:dt.reduce((s,t)=>s+t.total,0)} }) },[transactions])
-  const areaData  = useMemo(()=>Array.from({length:14},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-(13-i)); d.setHours(0,0,0,0); const dt=transactions.filter(tx=>{ const td=new Date(tx.createdAt); td.setHours(0,0,0,0); return td.getTime()===d.getTime() }); return {label:d.toLocaleDateString('en-PH',{month:'short',day:'numeric'}),revenue:dt.reduce((s,t)=>s+t.total,0)} }),[transactions])
+  const areaData  = useMemo(()=>getDailySeries({ transactions, refunds, returns, days: 14 }),[transactions,refunds,returns])
   const payBreak  = useMemo(()=>{ const map={}; transactions.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})) },[transactions])
   const topProds  = useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); return Object.values(map).sort((a,b)=>b.sold-a.sold).slice(0,5) },[transactions])
   const leastProds= useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); products.forEach(p=>{ if(!map[p.name]) map[p.name]={name:p.name,sold:0,revenue:0} }); return Object.values(map).sort((a,b)=>a.sold-b.sold) },[transactions,products])
@@ -115,16 +160,15 @@ export default function Dashboard() {
   ].filter(r=>r.value>0)
 
   // ── REPORTS ANALYTICS ─────────────────────────────────────
-  const repFiltered = useMemo(()=>{
-    const start=new Date()
-    if(repPeriod==='today') start.setHours(0,0,0,0)
-    else if(repPeriod==='this_week'){start.setDate(start.getDate()-6);start.setHours(0,0,0,0)}
-    else{start.setDate(1);start.setHours(0,0,0,0)}
-    return transactions.filter(tx=>new Date(tx.createdAt)>=start)
-  },[transactions,repPeriod])
-  const repRevenue = repFiltered.reduce((s,t)=>s+t.total,0)
-  const repVat     = repFiltered.reduce((s,t)=>s+t.vat,0)
-  const repAvg     = repFiltered.length?Math.round(repRevenue/repFiltered.length):0
+  const repStart = useMemo(()=>{
+    if(repPeriod==='today') return startOfDay(now)
+    if(repPeriod==='this_week') return startOfDay(subDays(now,6))
+    if(repPeriod==='this_year') return startOfYear(now)
+    return startOfMonth(now)
+  },[repPeriod,now])
+  const repFiltered = useMemo(()=>transactions.filter(tx=>new Date(tx.createdAt)>=repStart),[transactions,repStart])
+  const repMetrics  = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: repStart, to: now }),[transactions,refunds,returns,repStart,now])
+  const repAvg      = repMetrics.transactionCount?Math.round(repMetrics.netSales/repMetrics.transactionCount):0
   const repChartData = useMemo(()=>{
     if(repPeriod==='today') return Array.from({length:17},(_,i)=>{ const h=i+6; const hrs=repFiltered.filter(tx=>new Date(tx.createdAt).getHours()===h); return {label:`${h}:00`,value:hrs.reduce((s,t)=>s+t.total,0)} })
     const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
@@ -136,6 +180,18 @@ export default function Dashboard() {
   const hour     = now.getHours()
   const greeting = hour<12?t('good_morning'):hour<17?t('good_afternoon'):t('good_evening')
   const Tip      = ({active,payload,label})=>{ if(!active||!payload?.length) return null; return <div className="card" style={{padding:'8px 12px',fontSize:12}}><div style={{color:'var(--text3)',marginBottom:3}}>{label}</div><div style={{fontFamily:"'JetBrains Mono',monospace",color:'var(--accent)'}}>{peso(payload[0].value)}</div></div> }
+  const GrossNetTip = ({active,payload,label})=>{
+    if(!active||!payload?.length) return null
+    const d = payload[0].payload
+    return (
+      <div className="card" style={{padding:'8px 12px',fontSize:11.5}}>
+        <div style={{color:'var(--text3)',marginBottom:4}}>{label}</div>
+        {isAdmin && <div style={{display:'flex',justifyContent:'space-between',gap:10,color:'var(--text3)'}}><span>Gross</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(d.gross)}</span></div>}
+        {isAdmin && <div style={{display:'flex',justifyContent:'space-between',gap:10,color:'var(--red)'}}><span>Refunds</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>−{peso(d.refunds)}</span></div>}
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,color:'var(--accent)',fontWeight:700}}><span>Net</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(d.net)}</span></div>
+      </div>
+    )
+  }
 
   return (
     <div style={{height:'100%',overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:20}}>
@@ -160,35 +216,37 @@ export default function Dashboard() {
       {/* ══════════ OVERVIEW TAB ══════════ */}
       {activeTab==='overview' && <>
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:14}}>
-          {isAdmin && <MetricCard label={t('today_revenue')} value={pesoCompact(revenue)} sub={`${revChange>=0?'▲ +':'▼ '}${revChange}% ${t('vs_yesterday')}`} subUp={revChange>=0} color="var(--accent)"/>}
+          <RevenueCard label={t('today_revenue')} isAdmin={isAdmin} revenueView={effectiveView} setRevenueView={setRevenueView}
+            value={revenueValue} grossSales={todayMetrics.grossSales} deducted={todayMetrics.refundTotal+todayMetrics.returnTotal} revChange={revChange}/>
           <MetricCard label={t('transactions')} value={todayTxns.length} sub="Today" subUp color="var(--green)"/>
           <MetricCard label={t('items_sold')} value={itemsSold} sub="Today" subUp color="var(--purple)"/>
-          {isAdmin && <MetricCard label={t('avg_order')} value={pesoCompact(aov)} sub="Today" subUp color="var(--yellow)"/>}
+          {isAdmin && <MetricCard label={t('avg_order')} value={pesoCompact(aov)} sub="Today · net" subUp color="var(--yellow)"/>}
         </div>
 
-        {isAdmin && (
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(340px,1fr))',gap:14}}>
-            <div className="card" style={{padding:20}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Revenue — Last 14 Days</div>
-              <ResponsiveContainer width="100%" height={180}>
-                <AreaChart data={areaData}>
-                  <defs><linearGradient id="rg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={ACCENT} stopOpacity={0.25}/><stop offset="95%" stopColor={ACCENT} stopOpacity={0}/></linearGradient></defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/>
-                  <XAxis dataKey="label" tick={{fontSize:10,fill:'var(--text3)'}} tickLine={false} axisLine={false} interval={1}/>
-                  <YAxis tick={{fontSize:10,fill:'var(--text3)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?Math.round(v/1000)+'k':v}/>
-                  <Tooltip content={<Tip/>}/>
-                  <Area type="monotone" dataKey="revenue" stroke={ACCENT} strokeWidth={2} fill="url(#rg)"/>
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(340px,1fr))',gap:14}}>
+          <div className="card" style={{padding:20}}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Revenue — Last 14 Days</div>
+            <ResponsiveContainer width="100%" height={180}>
+              <ComposedChart data={areaData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/>
+                <XAxis dataKey="date" tick={{fontSize:10,fill:'var(--text3)'}} tickLine={false} axisLine={false} interval={1}/>
+                <YAxis tick={{fontSize:10,fill:'var(--text3)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?Math.round(v/1000)+'k':v}/>
+                <Tooltip content={<GrossNetTip/>}/>
+                {isAdmin && <Legend iconSize={8} wrapperStyle={{fontSize:11}}/>}
+                {isAdmin && <Line type="monotone" dataKey="gross" name="Gross" stroke={SLATE} strokeWidth={1.5} strokeDasharray="4 3" dot={false}/>}
+                <Line type="monotone" dataKey="net" name="Net" stroke={ACCENT} strokeWidth={2} dot={false}/>
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          {isAdmin && (
             <div className="card" style={{padding:20}}>
               <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Payment Methods</div>
               <ResponsiveContainer width="100%" height={180}>
                 <PieChart><Pie data={payBreak} cx="50%" cy="50%" innerRadius={45} outerRadius={70} dataKey="value" paddingAngle={3}>{payBreak.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]}/>)}</Pie><Tooltip formatter={v=>peso(v)}/><Legend iconSize={8} wrapperStyle={{fontSize:11}}/></PieChart>
               </ResponsiveContainer>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:14}}>
           {isAdmin && (
@@ -542,34 +600,37 @@ export default function Dashboard() {
 
       {/* ══════════ REPORTS TAB ══════════ */}
       {activeTab==='reports' && <>
-        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
           <span style={{fontSize:12,color:'var(--text3)'}}>Period:</span>
-          {['today','this_week','this_month'].map(p=>(
+          {['today','this_week','this_month','this_year'].map(p=>(
             <button key={p} onClick={()=>setRepPeriod(p)}
               style={{padding:'6px 14px',fontSize:11,fontWeight:600,border:`1px solid ${repPeriod===p?'var(--blue)':'var(--border)'}`,borderRadius:6,cursor:'pointer',background:repPeriod===p?'var(--blue)':'var(--bg2)',color:repPeriod===p?'#ffffff':'var(--text3)',transition:'all .15s'}}>
-              {p==='today'?'Today':p==='this_week'?'This Week':'This Month'}
+              {p==='today'?'Today':p==='this_week'?'This Week':p==='this_month'?'This Month':'This Year'}
             </button>
           ))}
         </div>
 
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:14}}>
-          <StatCard label="Total Revenue"   value={peso(repRevenue)}       color="var(--accent)"/>
-          <StatCard label="Transactions"    value={repFiltered.length}     color="var(--green)"/>
-          <StatCard label="Total VAT"       value={peso(repVat)}           color="var(--purple)"/>
-          <StatCard label="Average Order"   value={peso(repAvg)}           color="var(--yellow)"/>
+          <StatCard label={t('net_sales')}  value={peso(repMetrics.netSales)}        color="var(--accent)"/>
+          <StatCard label={t('transactions')} value={repMetrics.transactionCount}    color="var(--green)"/>
+          <StatCard label={t('net_vat')}    value={peso(repMetrics.netVat)}          color="var(--purple)"/>
+          <StatCard label={t('avg_order')}  value={peso(repAvg)}                     color="var(--yellow)"/>
         </div>
 
-        <div className="card" style={{padding:20}}>
-          <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Revenue Chart</div>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={repChartData} barSize={repPeriod==='today'?14:28}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false}/>
-              <XAxis dataKey="label" tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false}/>
-              <YAxis tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?Math.round(v/1000)+'k':v}/>
-              <Tooltip content={<Tip/>} cursor={{fill:'rgba(255,255,255,0.03)'}}/>
-              <Bar dataKey="value" fill={ACCENT} radius={[4,4,0,0]}/>
-            </BarChart>
-          </ResponsiveContainer>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(340px,1fr))',gap:14}}>
+          <div className="card" style={{padding:20}}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Revenue Chart</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={repChartData} barSize={repPeriod==='today'?14:28}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false}/>
+                <XAxis dataKey="label" tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false}/>
+                <YAxis tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?Math.round(v/1000)+'k':v}/>
+                <Tooltip content={<Tip/>} cursor={{fill:'rgba(255,255,255,0.03)'}}/>
+                <Bar dataKey="value" fill={ACCENT} radius={[4,4,0,0]}/>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <SalesBreakdownCard metrics={repMetrics} isLight={isLight}/>
         </div>
 
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:14}}>

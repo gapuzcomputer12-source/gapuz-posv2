@@ -11,6 +11,7 @@
     --green:#22c55e; --red:#ef4444; --blue:#3b82f6;
     --yellow:#f59e0b; --purple:#8b5cf6; --orange:#f97316;
     --skeleton-base:rgba(255,255,255,0.06); --skeleton-shine:rgba(255,255,255,0.16);
+    --login-input-bg:#F1F1F1; --brand-green:#0A8F63; --brand-green-dark:#087a54; --brand-green-tint:rgba(10,143,99,0.16);
   }
   .light {
     --bg:#f7f7f8; --bg2:#ffffff; --bg3:#f2f2f2; --bg4:#e8e8e8; --bg5:#dedede;
@@ -48,6 +49,16 @@
   .input-field:focus{border-color:var(--accent);}
   .input-field::placeholder{color:var(--text3);}
   .input-field:disabled{opacity:.5;cursor:not-allowed;}
+  .login-input{background:var(--login-input-bg);border:1px solid rgba(0,0,0,0.04);border-radius:6px;height:44px;padding:0 14px;transition:border-color .2s ease, box-shadow .2s ease, background .2s ease;}
+  .login-input:focus{border-color:var(--brand-green);background:var(--bg2);box-shadow:0 0 0 3px var(--brand-green-tint);}
+  .login-arrow{display:inline-flex;transition:transform .18s ease;}
+  .login-submit:hover .login-arrow{transform:translateX(3px);}
+  .login-submit{position:relative;overflow:hidden;background:var(--brand-green);color:#ffffff;}
+  .login-submit:hover{background:var(--brand-green-dark);}
+  .login-submit::after{content:'';position:absolute;top:0;left:-60%;width:35%;height:100%;background:linear-gradient(115deg, transparent, rgba(255,255,255,0.4), transparent);transform:skewX(-20deg);transition:left .55s ease;pointer-events:none;}
+  .login-submit:hover::after{left:130%;}
+  .login-label{color:var(--text2);transition:color .15s ease;}
+  .login-field:focus-within .login-label{color:var(--brand-green);}
   .qty-input::-webkit-inner-spin-button,.qty-input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
   .qty-input{-moz-appearance:textfield;}
   .select-field{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:9px 12px;font-size:14.5px;color:var(--text);outline:none;cursor:pointer;transition:border-color .15s;font-family:'Plus Jakarta Sans',system-ui,sans-serif;}
@@ -83,6 +94,7 @@
 @keyframes fadeUp{from{opacity:0}to{opacity:1}}
 @keyframes slideIn{from{opacity:0}to{opacity:1}}
 @keyframes scaleIn{from{opacity:0}to{opacity:1}}
+@keyframes modalPopIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes shimmer{0%{background-position:-468px 0}100%{background-position:468px 0}}
 @keyframes popIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1)}}
@@ -94,6 +106,34 @@
 .animate-spin{animation:spin 1s linear infinite;}
 .animate-pop{animation:popIn .45s cubic-bezier(.34,1.56,.64,1) forwards;}
 .animate-receipt-in{animation:receiptIn .4s cubic-bezier(.16,1,.3,1) forwards;}
+.animate-modal-in{animation:modalPopIn .18s cubic-bezier(.16,1,.3,1) forwards;}
+
+@media (prefers-reduced-motion: reduce){
+  .animate-modal-in{animation:none!important;}
+}
+
+/* Login page personality */
+@keyframes mascotFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+@keyframes mascotShake{10%,90%{transform:translateX(-1px) rotate(-1deg)}20%,80%{transform:translateX(2px) rotate(1deg)}30%,50%,70%{transform:translateX(-4px) rotate(-2deg)}40%,60%{transform:translateX(4px) rotate(2deg)}}
+@keyframes mascotHop{0%{transform:translateY(0) scale(1,1)}30%{transform:translateY(-22px) scale(1.04,0.96)}55%{transform:translateY(0) scale(0.97,1.03)}100%{transform:translateY(0) scale(1,1)}}
+@keyframes glowPulse{0%,100%{opacity:.22;transform:scale(1)}50%{opacity:.34;transform:scale(1.07)}}
+@keyframes iconDrift{0%,100%{transform:translate(0,0)}50%{transform:translate(var(--drift-x,6px),var(--drift-y,8px))}}
+@keyframes loginFadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes formShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-3px)}40%,60%{transform:translateX(3px)}}
+@keyframes errorFadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+
+.mascot-float{animation:mascotFloat 3.6s ease-in-out infinite;}
+.mascot-shake{animation:mascotShake .5s ease-in-out;}
+.mascot-hop{animation:mascotHop .5s cubic-bezier(.34,1.56,.64,1);}
+.glow-pulse{animation:glowPulse 4.5s ease-in-out infinite;}
+.decor-drift{animation:iconDrift var(--drift-dur,9s) ease-in-out infinite;animation-delay:var(--drift-delay,0s);}
+.login-stagger{animation:loginFadeUp .55s ease both;}
+.form-shake{animation:formShake .45s ease-in-out;}
+.error-fade-in{animation:errorFadeIn .25s ease;}
+
+@media (prefers-reduced-motion: reduce){
+  .mascot-float, .decor-drift { animation:none!important; }
+}
 
 .receipt-slot{
   height:14px; border-radius:7px 7px 3px 3px; position:relative; flex-shrink:0;

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   Cpu, CircuitBoard, MemoryStick, HardDrive, Laptop, Monitor, Keyboard, Mouse,
   Headphones, Webcam, Printer, Router, Usb, Cable, Fan, BatteryCharging,
-  Gamepad2, Smartphone, Tablet, Wrench, Package,
+  Gamepad2, Smartphone, Tablet, Wrench, Package, Banknote, CreditCard, SplitSquareHorizontal,
 } from 'lucide-react'
 import { useAppStore } from '../store'
 import { translations } from '../i18n/translations'
@@ -12,6 +12,18 @@ export const pesoCompact = (n) => { if(n>=1000000) return '₱'+(n/1000000).toFi
 export const fmtDate = (d) => new Date(d).toLocaleDateString('en-PH',{month:'short',day:'numeric',year:'numeric'})
 export const fmtDateTime = (d) => new Date(d).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
 export const fmtTxnId = (id) => '#'+String(id).padStart(4,'0')
+
+// A sale's `payment` column is free text — "Cash", "GCash", "Card", or a
+// "Cash+GCash"-style combo for a split payment (see schema.sql). Shared by
+// anywhere a transaction's payment method shows as an icon+label chip
+// (Dashboard, CustomerHistoryModal).
+export const paymentDisplay = (payment) => {
+  if (!payment) return { label: '—', Icon: Banknote }
+  if (payment.includes('+')) return { label: 'Split', Icon: SplitSquareHorizontal }
+  if (payment === 'GCash') return { label: payment, Icon: Smartphone }
+  if (payment === 'Card')  return { label: payment, Icon: CreditCard }
+  return { label: payment, Icon: Banknote }
+}
 export const genBarcode = () => 'BC-'+Date.now().toString(36).toUpperCase()
 
 // Downscales + re-encodes an uploaded image before it's stored as a base64 data
@@ -110,6 +122,21 @@ export const useT = () => {
 }
 
 // Breakpoints: <=860px = mobile (stacked layouts, drawer nav), <=1180px = tablet (narrower panels)
+// Dedicated breakpoint for the login page's left/right split (desktop-leaning
+// 768px cutoff, narrower than the app-wide useBreakpoint's 860px).
+export const useLoginMobile = () => {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)')
+    const handler = () => setNarrow(mq.matches)
+    handler()
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return narrow
+}
+
 export const useBreakpoint = () => {
   const [width, setWidth] = useState(typeof window!=='undefined' ? window.innerWidth : 1280)
   useEffect(()=>{

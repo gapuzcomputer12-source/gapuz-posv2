@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
-import { Users, Plus, Pencil, ClipboardList, Award, ShoppingCart } from 'lucide-react'
-import { useCustomerStore, useTransactionStore } from '../store'
+import { Users, Plus, Pencil } from 'lucide-react'
+import { useCustomerStore } from '../store'
 import { useToast } from '../utils/toast'
-import { useT, peso, fmtDate, getTier } from '../utils/helpers'
+import { useT, peso, fmtDate } from '../utils/helpers'
+import { getTier } from '../utils/loyalty'
+import CustomerHistoryModal from '../components/CustomerHistoryModal'
 
 const EMPTY = { name:'', email:'', phone:'', address:'' }
 
@@ -24,8 +26,6 @@ const avatarColor = (seed) => {
 
 export default function Customers() {
   const { customers, loading, addCustomer, updateCustomer, deleteCustomer } = useCustomerStore()
-  const transactions = useTransactionStore(s=>s.transactions)
-  const txnLoading = useTransactionStore(s=>s.loading)
   const [search,   setSearch]   = useState('')
   const [modal,    setModal]    = useState(null)
   const [form,     setForm]     = useState(EMPTY)
@@ -61,8 +61,6 @@ export default function Customers() {
   useEffect(()=>{ setPage(1) }, [search, sortBy])
   useEffect(()=>{ if(page>totalPages) setPage(totalPages) }, [totalPages])
   const pageItems = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE)
-
-  const custTxns = selected ? transactions.filter(tx=>tx.customerId===selected.id) : []
 
   return (
     <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:20,gap:16}}>
@@ -101,7 +99,7 @@ export default function Customers() {
                     <div><div style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{c.name}</div><div style={{fontSize:11.5,color:'var(--text2)',marginTop:2}}>{c.email||'No email'}</div></div>
                   </div></td>
                   <td style={{fontSize:12,color:'var(--text2)'}}>{c.phone||'—'}</td>
-                  <td><span style={{fontSize:11,fontWeight:600,color:tier.color}}>{tier.icon} {tier.label}</span></td>
+                  <td><span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10.5,fontWeight:700,padding:'3px 9px',borderRadius:99,background:tier.bg,color:tier.color}}><tier.icon size={11}/>{tier.label}</span></td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--yellow)',fontWeight:600}}>{(c.points||0).toLocaleString()}</td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11}}>{c.purchases||0}</td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--green)',fontWeight:600}}>{peso(c.totalSpent||0)}</td>
@@ -144,78 +142,7 @@ export default function Customers() {
         </div>
       )}
 
-      {/* History Modal */}
-      {modal==='history'&&(
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&setModal(null)}>
-          <div className="card animate-scale-in" style={{width:'min(520px,92vw)',padding:24,maxHeight:'80vh',display:'flex',flexDirection:'column'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-              <div><div style={{fontSize:15,fontWeight:700,display:'flex',alignItems:'center',gap:6}}><ClipboardList size={14} style={{color:'var(--accent)'}}/>{t('purchase_history')}</div><div style={{fontSize:12,color:'var(--text2)',marginTop:2}}>{selected?.name}</div></div>
-              <button onClick={()=>setModal(null)} style={{background:'none',border:'none',color:'var(--text3)',cursor:'pointer',fontSize:20}}>×</button>
-            </div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10,marginBottom:12}}>
-              {[{label:'Loyalty Points',value:(selected?.points||0).toLocaleString(),color:'var(--yellow)'},{label:'Total Purchases',value:selected?.purchases||0,color:'var(--accent)'},{label:'Total Spent',value:peso(selected?.totalSpent||0),color:'var(--green)'}].map(s=>(
-                <div key={s.label} className="card-surface" style={{padding:12}}>
-                  <div style={{fontSize:9.5,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:4}}>{s.label}</div>
-                  <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:16,fontWeight:700,color:s.color}}>{s.value}</div>
-                </div>
-              ))}
-            </div>
-            {/* Tier criteria */}
-            <div style={{marginBottom:12,padding:12,background:'var(--bg2)',borderRadius:10}}>
-              <div style={{fontSize:10,fontWeight:700,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8,display:'flex',alignItems:'center',gap:4}}><Award size={11} style={{color:'var(--purple)'}}/>Loyalty Tier Criteria</div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(90px,1fr))',gap:6}}>
-                {[
-                  {tier:'Bronze', range:'0–499',    color:'var(--accent)', icon:'🥉', current:(selected?.points||0)<500},
-                  {tier:'Silver', range:'500–1,499', color:'#94a3b8', icon:'🥈', current:(selected?.points||0)>=500&&(selected?.points||0)<1500},
-                  {tier:'Gold',   range:'1,500–2,999',color:'var(--yellow)', icon:'🥇', current:(selected?.points||0)>=1500&&(selected?.points||0)<3000},
-                  {tier:'Platinum',range:'3,000+',   color:'var(--purple)', icon:'💎', current:(selected?.points||0)>=3000},
-                ].map(t=>(
-                  <div key={t.tier} style={{padding:'8px 6px',borderRadius:8,textAlign:'center',background:t.current?'var(--bg3)':'transparent',border:t.current?`2px solid ${t.color}`:'1px solid var(--border)',transition:'all .2s'}}>
-                    <div style={{fontSize:16,marginBottom:3}}>{t.icon}</div>
-                    <div style={{fontSize:10,fontWeight:700,color:t.color}}>{t.tier}</div>
-                    <div style={{fontSize:9,color:'var(--text3)',marginTop:2}}>{t.range} pts</div>
-                    {t.current&&<div style={{fontSize:8,color:t.color,marginTop:3,fontWeight:700}}>CURRENT</div>}
-                  </div>
-                ))}
-              </div>
-              <div style={{fontSize:10,color:'var(--text3)',marginTop:8,textAlign:'center'}}>Points earned: 10 pts per transaction + 1 pt per ₱100 spent</div>
-            </div>
-            <div style={{flex:1,overflowY:'auto'}}>
-              {txnLoading?<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:32,color:'var(--text3)'}}>
-                <svg className="animate-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round">
-                  <path d="M21 12a9 9 0 1 1-9-9"/>
-                </svg>
-                Loading history…
-              </div>
-              :custTxns.length===0?<div style={{textAlign:'center',padding:32,color:'var(--text3)'}}><ShoppingCart size={32} style={{opacity:.2,marginBottom:8}}/>{t('no_purchases')}</div>
-              :custTxns.map(tx=>{
-                const isRefunded  = tx.status==='Refunded'
-                const isVoided    = isRefunded||tx.status==='Partially Refunded'
-                return(
-                <div key={tx.id} className="card-surface" style={{padding:12,marginBottom:8,opacity:isRefunded?0.6:1}}>
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8}}>
-                    <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--accent)'}}>#{String(tx.id).padStart(4,'0')}</span>
-                    <span style={{fontSize:11,color:'var(--text3)',flex:1,textAlign:'center'}}>{new Date(tx.createdAt).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
-                    <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,fontWeight:700,color:isRefunded?'var(--text3)':'var(--green)',textDecoration:isRefunded?'line-through':'none'}}>{peso(tx.total)}</span>
-                  </div>
-                  <div style={{fontSize:11,color:'var(--text2)'}}>{(tx.items||[]).map(i=>`${i.name} ×${i.qty}`).join(' · ')}</div>
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:5,gap:8}}>
-                    <span style={{fontSize:10,color:'var(--text3)'}}>{tx.payment}{!isVoided&&` · +${10 + Math.floor(tx.total/100)} pts earned`}</span>
-                    {isVoided&&(
-                      <span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:99,textTransform:'uppercase',letterSpacing:'.4px',
-                        background:isRefunded?'rgba(239,68,68,0.1)':'rgba(245,158,11,0.1)',
-                        color:isRefunded?'var(--red)':'var(--yellow)',
-                        border:`1px solid ${isRefunded?'rgba(239,68,68,0.25)':'rgba(245,158,11,0.25)'}`}}>
-                        ↩ {isRefunded?'Refunded':'Partially Refunded'}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )})}
-            </div>
-          </div>
-        </div>
-      )}
+      <CustomerHistoryModal open={modal==='history'} onClose={()=>setModal(null)} customer={selected}/>
     </div>
   )
 }

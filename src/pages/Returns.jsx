@@ -1,12 +1,16 @@
 import { useState, useMemo } from 'react'
-import { ClipboardList, Clock, CheckCircle2, RefreshCw, Search, Package, Banknote, Smartphone, Tag, AlertTriangle, Check, X } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { ClipboardList, Clock, CheckCircle2, RefreshCw, Search, Package, AlertTriangle, Check, X, Eye } from 'lucide-react'
 import { useTransactionStore, useAuthStore, useProductStore, useAppStore } from '../store'
 import { useReturnStore } from '../store/useReturnStore'
 import { useToast } from '../utils/toast'
-import { useT, REFUND_REASONS, peso, fmtDate, fmtDateTime } from '../utils/helpers'
+import { useT, REFUND_REASONS, peso, fmtDate } from '../utils/helpers'
+import RefundDetailsModal, { StatusBadge, METHOD_ICON } from '../components/RefundDetailsModal'
 
-const RETURN_METHODS = ['Cash', 'GCash', 'Store Credit']
-const METHOD_ICON = { Cash: Banknote, GCash: Smartphone, 'Store Credit': Tag }
+// 'Exchange' hands back merchandise, not money — Gross vs Net sales
+// reporting (src/utils/salesMetrics.js) only deducts the cash/GCash/store
+// credit methods from revenue, never an exchange.
+const RETURN_METHODS = ['Cash', 'GCash', 'Store Credit', 'Exchange']
 
 const STEPS = [
   { num: 1, label: 'Look up transaction' },
@@ -15,38 +19,15 @@ const STEPS = [
   { num: 4, label: 'Confirm & submit' },
 ]
 
-const StatusBadge = ({ status, isLight }) => {
-  const styles = isLight ? {
-    Pending:  { bg: '#fef3c7', color: '#92400e', border: '#fde68a' },
-    Approved: { bg: '#d1fae5', color: '#047857', border: '#a7f3d0' },
-    Rejected: { bg: '#fee2e2', color: '#991b1b', border: '#fecaca' },
-  } : {
-    Pending:  { bg: 'rgba(245,158,11,0.10)',  color: '#f59e0b', border: 'rgba(245,158,11,0.25)'  },
-    Approved: { bg: 'rgba(52,211,153,0.10)',  color: '#34d399', border: 'rgba(52,211,153,0.25)'  },
-    Rejected: { bg: 'rgba(239,68,68,0.10)', color: '#ef4444', border: 'rgba(239,68,68,0.25)' },
-  }
-
-  const s = styles[status] || styles.Pending
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      padding: '3px 10px', borderRadius: 99,
-      fontSize: 10, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
-      background: s.bg, color: s.color, border: `1px solid ${s.border}`,
-    }}>
-      {status === 'Approved' ? '✓' : status === 'Rejected' ? '✗' : '●'} {status}
-    </span>
-  )
-}
-
 export default function Returns() {
   const t                  = useT()
   const toast              = useToast()
-  const { role }           = useAuthStore()
+  const { role, user }     = useAuthStore()
   const { theme }          = useAppStore()
   const { transactions }   = useTransactionStore()
-  const { products, restockProduct } = useProductStore()
-  const { returns, addReturn, approveReturn, rejectReturn } = useReturnStore()
+  const { applyStockUpdates } = useProductStore()
+  const { returns, loading, addReturn, approveReturn, rejectReturn } = useReturnStore()
+  const [searchParams]     = useSearchParams()
 
   const isAdmin = role === 'admin'
   const isLight = theme === 'light'
@@ -56,7 +37,10 @@ export default function Returns() {
   const [searchId,      setSearchId]     = useState('')
   const [selectedTxn,   setSelectedTxn]  = useState(null)
   const [returnItems,   setReturnItems]  = useState({})
-  const [filterStatus,  setFilterStatus] = useState('All')
+  // Lets the Dashboard/Reports "Sales breakdown" card deep-link here already
+  // filtered (e.g. /returns?status=Approved).
+  const [filterStatus,  setFilterStatus] = useState(() => searchParams.get('status') || 'All')
+  const [viewReturn,    setViewReturn]   = useState(null)
   const [details, setDetails] = useState({
     reason: REFUND_REASONS[0],
     method: 'Cash',
@@ -144,40 +128,37 @@ export default function Returns() {
     setStep(4)
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const { subtotal, vat, total } = calcTotals()
     const selectedList = selectedTxn.items
       .filter(item => returnItems[item.id]?.selected)
       .map(item => ({ ...item, returnQty: returnItems[item.id].qty }))
 
-    addReturn({
+    const r = await addReturn({
       txnId:        selectedTxn.id,
       customerName: selectedTxn.customerName || 'Walk-in',
       items:        selectedList,
       reason:       details.reason,
       method:       details.method,
       notes:        details.notes,
+      processedBy:  user?.user_metadata?.name || role || 'Admin',
       subtotal, vat, total,
     })
 
+    if (!r) return toast('Failed to submit return — please try again', 'error')
     toast(t('refund_processed'), 'success')
     resetWizard()
   }
 
-  const handleApprove = (r) => {
-    approveReturn(r.id)
-    // Restock items
-    if (r.items?.length) {
-      r.items.forEach(item => {
-        const prod = products.find(p => p.id === item.id)
-        if (prod) restockProduct(prod.id, item.returnQty || item.qty || 1)
-      })
-    }
-    toast('Return approved — items restocked', 'success')
+  const handleApprove = async (r) => {
+    const result = await approveReturn(r.id)
+    if (!result) return toast('Failed to approve return — please try again', 'error')
+    applyStockUpdates(result.productUpdates)
+    toast(result.already ? 'Return already processed' : 'Return approved — items restocked', 'success')
   }
 
-  const handleReject = (r) => {
-    rejectReturn(r.id)
+  const handleReject = async (r) => {
+    await rejectReturn(r.id)
     toast('Return rejected', 'info')
   }
 
@@ -505,52 +486,51 @@ export default function Returns() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'var(--bg3)' }}>
-                  {['Return #', 'TXN #', 'Date', 'Customer', 'Reason', 'Method', 'Total', 'Status', 'Actions'].map(h => (
+                  {['Return #', 'TXN #', 'Date', 'Customer', 'Total', 'Status', 'View'].map(h => (
                     <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text3)', letterSpacing: '.7px', textTransform: 'uppercase', whiteSpace: 'nowrap', borderBottom: '1px solid var(--border)' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {filteredReturns.length === 0 ? (
-                  <tr><td colSpan={9} style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text3)' }}>
+                {loading ? (
+                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text3)' }}>Loading…</td></tr>
+                ) : filteredReturns.length === 0 ? (
+                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text3)' }}>
                     <RefreshCw size={32} style={{ opacity: .2, marginBottom: 8 }}/>
                     <div>No returns found</div>
                   </td></tr>
                 ) : filteredReturns.map(r => (
-                  <tr key={r.id} style={{ borderBottom: '1px solid var(--border)', transition: 'background .1s' }}
-                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg3)'}
-                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                    <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isLight ? '#059669' : 'var(--accent)', fontWeight: 700 }}>{r.id}</td>
+                  <tr key={r.id} className="refund-row" style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => setViewReturn(r)}>
+                    <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isLight ? '#059669' : 'var(--accent)', fontWeight: 700 }}>RTN-{String(r.id).padStart(4, '0')}</td>
                     <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>#{String(r.txnId).padStart(4, '0')}</td>
-                    <td style={{ padding: '11px 14px', fontSize: 11, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{fmtDate(r.date)}</td>
+                    <td style={{ padding: '11px 14px', fontSize: 11, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{fmtDate(r.createdAt)}</td>
                     <td style={{ padding: '11px 14px', fontSize: 12 }}>{r.customerName}</td>
-                    <td style={{ padding: '11px 14px', fontSize: 11, color: 'var(--text2)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.reason}</td>
-                    <td style={{ padding: '11px 14px' }}>
-                      <span style={{ fontSize: 11, color: 'var(--text2)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        {(() => { const MIcon = METHOD_ICON[r.method] || Tag; return <MIcon size={12}/> })()}{r.method}
-                      </span>
-                    </td>
                     <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 12, color: 'var(--red)', fontWeight: 700 }}>{peso(r.total)}</td>
                     <td style={{ padding: '11px 14px' }}><StatusBadge status={r.status} isLight={isLight}/></td>
                     <td style={{ padding: '11px 14px' }}>
-                      {r.status === 'Pending' && isAdmin ? (
-                        <div style={{ display: 'flex', gap: 5 }}>
-                          <button onClick={() => handleApprove(r)} style={{ padding: '5px 10px', borderRadius: 7, border: isLight ? '1px solid #6ee7b7' : '1px solid rgba(52,211,153,0.3)', background: isLight ? 'rgba(4,120,87,0.08)' : 'rgba(52,211,153,0.08)', color: isLight ? '#047857' : 'var(--accent)', cursor: 'pointer', fontSize: 11, fontWeight: 700, transition: 'all .15s', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                            onMouseEnter={e => e.currentTarget.style.background = isLight ? 'rgba(4,120,87,0.18)' : 'rgba(52,211,153,0.18)'}
-                            onMouseLeave={e => e.currentTarget.style.background = 'rgba(52,211,153,0.08)'}>
-                            <Check size={12}/>{t('approve')}
-                          </button>
-                          <button onClick={() => handleReject(r)} style={{ padding: '5px 10px', borderRadius: 7, border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.08)', color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 700, transition: 'all .15s', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                            onMouseEnter={e => e.currentTarget.style.background = 'rgba(239,68,68,0.18)'}
-                            onMouseLeave={e => e.currentTarget.style.background = 'rgba(239,68,68,0.08)'}>
-                            <X size={12}/>{t('reject')}
-                          </button>
-                        </div>
-                      ) : r.status === 'Pending' && !isAdmin ? (
-                        <span style={{ fontSize: 10, color: 'var(--yellow)' }}>Awaiting admin</span>
-                      ) : (
-                        <span style={{ fontSize: 11, color: 'var(--text3)' }}>—</span>
-                      )}
+                      <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+                        <button onClick={e => { e.stopPropagation(); setViewReturn(r) }} title="View details" style={{
+                          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                          width: 26, height: 26, borderRadius: 6, border: '1px solid var(--border)',
+                          background: 'var(--bg3)', color: 'var(--text2)', cursor: 'pointer', flexShrink: 0,
+                        }}><Eye size={13}/></button>
+                        {r.status === 'Pending' && isAdmin ? (
+                          <>
+                            <button onClick={e => { e.stopPropagation(); handleApprove(r) }} style={{ padding: '5px 10px', borderRadius: 7, border: isLight ? '1px solid #6ee7b7' : '1px solid rgba(52,211,153,0.3)', background: isLight ? 'rgba(4,120,87,0.08)' : 'rgba(52,211,153,0.08)', color: isLight ? '#047857' : 'var(--accent)', cursor: 'pointer', fontSize: 11, fontWeight: 700, transition: 'all .15s', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                              onMouseEnter={e => e.currentTarget.style.background = isLight ? 'rgba(4,120,87,0.18)' : 'rgba(52,211,153,0.18)'}
+                              onMouseLeave={e => e.currentTarget.style.background = 'rgba(52,211,153,0.08)'}>
+                              <Check size={12}/>{t('approve')}
+                            </button>
+                            <button onClick={e => { e.stopPropagation(); handleReject(r) }} style={{ padding: '5px 10px', borderRadius: 7, border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.08)', color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 700, transition: 'all .15s', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                              onMouseEnter={e => e.currentTarget.style.background = 'rgba(239,68,68,0.18)'}
+                              onMouseLeave={e => e.currentTarget.style.background = 'rgba(239,68,68,0.08)'}>
+                              <X size={12}/>{t('reject')}
+                            </button>
+                          </>
+                        ) : r.status === 'Pending' && !isAdmin ? (
+                          <span style={{ fontSize: 10, color: 'var(--yellow)' }}>Awaiting admin</span>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -567,6 +547,16 @@ export default function Returns() {
           </div>
         </div>
       </div>
+
+      <RefundDetailsModal
+        open={!!viewReturn}
+        onClose={() => setViewReturn(null)}
+        record={viewReturn}
+        type="return"
+        isAdmin={isAdmin}
+        onApprove={handleApprove}
+        onReject={handleReject}
+      />
     </div>
   )
 }
