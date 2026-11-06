@@ -339,10 +339,11 @@ BEGIN
     out_id     := v_id;
     out_stock  := v_next;
     out_zeroed := (v_prev > 0 AND v_next = 0);
-    -- Only fires on the exact crossing into 3 left, not every low value
-    -- (1-2 stays silent) — otherwise a busy register would spam admins
-    -- with one email per unit sold while stock drains from 3 down to 0.
-    out_low    := (v_prev > 3 AND v_next = 3);
+    -- Fires whenever a real decrease lands stock at 1, 2, or 3 — not just
+    -- an exact crossing through 3 — so a batch sale that jumps straight
+    -- from, say, 6 to 1 still gets a low-stock email instead of staying
+    -- silent just because it skipped over 3.
+    out_low    := (v_prev > v_next AND v_next BETWEEN 1 AND 3);
     RETURN NEXT;
   END LOOP;
 END;

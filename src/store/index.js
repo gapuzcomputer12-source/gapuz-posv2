@@ -94,10 +94,11 @@ export function logActivity(action, entityType, entityLabel, details) {
 const LOG_SELECT = 'id:log_id, actorName:actor_name, action, entityType:entity_type, entityLabel:entity_label, details, createdAt:created_at'
 
 // Fire-and-forget: emails every active admin via the send-low-stock-alert
-// edge function. Call this only at the moment a product's stock crosses
-// down to exactly 3 (level 'low') or exactly 0 (level 'out'), never on a
-// poll and never for 1-2, so it fires once per crossing instead of once
-// per unit sold while stock drains.
+// edge function. Call this only at the moment a real decrease lands stock
+// at 1, 2, or 3 (level 'low') or exactly 0 (level 'out') — never on a poll
+// — so a checkout that drains stock one unit at a time still emails once
+// per level crossed, and a batch sale that jumps straight into that range
+// (skipping individual values) still emails once for wherever it landed.
 function notifyLowStock(product, level = 'out') {
   supabase.functions.invoke('send-low-stock-alert', { body: { product, level } })
     .then(({ error }) => { if (error) console.error('low-stock alert failed:', error.message) })
@@ -245,10 +246,10 @@ export const useProductStore = create((set, get) => ({
     if (!error) {
       set(s => ({ products: s.products.map(p => p.id === id ? { ...p, ...data } : p) }))
       logActivity('updated', 'product', data.name || prev?.name)
-      if ('stock' in data) {
-        const alertProduct = { name: data.name || prev?.name, category: data.category || prev?.category, barcode: data.barcode || prev?.barcode }
-        if (prev?.stock > 0 && data.stock === 0) notifyLowStock(alertProduct, 'out')
-        else if (prev?.stock > 3 && data.stock === 3) notifyLowStock(alertProduct, 'low')
+      if ('stock' in data && prev?.stock > data.stock) {
+        const alertProduct = { name: data.name || prev?.name, category: data.category || prev?.category, barcode: data.barcode || prev?.barcode, stock: data.stock }
+        if (data.stock === 0) notifyLowStock(alertProduct, 'out')
+        else if (data.stock <= 3) notifyLowStock(alertProduct, 'low')
       }
     }
   },
@@ -278,8 +279,8 @@ export const useProductStore = create((set, get) => ({
       products: s.products.map(p => {
         const r = byId.get(p.id)
         if (!r) return p
-        if (r.out_zeroed) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode }, 'out'])
-        else if (r.out_low) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode }, 'low'])
+        if (r.out_zeroed) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode, stock: r.out_stock }, 'out'])
+        else if (r.out_low) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode, stock: r.out_stock }, 'low'])
         const ci = items.find(i => i.id === p.id)
         return { ...p, stock: r.out_stock, sold: (p.sold || 0) + (ci?.qty || 0) }
       })

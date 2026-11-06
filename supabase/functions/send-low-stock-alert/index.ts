@@ -1,13 +1,10 @@
 // Supabase Edge Function: send-low-stock-alert
-// Emails every active admin when a product's stock crosses down to one of
-// two thresholds: exactly 3 left (level: 'low') or exactly 0 left (level:
-// 'out'). Called from the frontend store the moment either crossing
-// happens (checkout deducting stock, or an admin editing stock directly) —
-// not on a poll, so each crossing fires at most once. Stock values of 1
-// and 2 are deliberately silent, so a single sale that drains several
-// units at once doesn't fire one email per unit on the way down. Any
-// signed-in user may call it (a cashier can trigger it at checkout), but
-// the admin recipient list and SMTP credentials stay server-side.
+// Emails every active admin when a product's stock genuinely decreases
+// down into 1, 2, or 3 left (level: 'low') or down to exactly 0 (level:
+// 'out'). Called from the frontend store the moment that happens (checkout
+// deducting stock, or an admin editing stock directly) — not on a poll.
+// Any signed-in user may call it (a cashier can trigger it at checkout),
+// but the admin recipient list and SMTP credentials stay server-side.
 //
 // Reuses the same Brevo SMTP secrets already set up for send-receipt:
 //   BREVO_SMTP_LOGIN, BREVO_SMTP_KEY, SENDER_EMAIL
@@ -28,11 +25,10 @@ const json = (body: unknown, status = 200) =>
 const LOGO_URL = 'https://gapuz-pos.vercel.app/logo.jpg'
 const APP_URL = 'https://gapuz-pos.vercel.app'
 
-// level 'out' -> stock hit exactly 0. level 'low' -> stock crossed down to
-// exactly 3 (the only two thresholds that email — 1 and 2 stay silent so a
-// single busy sale doesn't fire a message per unit as stock drains).
+// level 'out' -> stock hit exactly 0. level 'low' -> stock is now 1, 2, or 3.
 function alertHtml(product: any, level: 'out' | 'low') {
   const isOut = level === 'out'
+  const stockLeft = isOut ? 0 : (product.stock ?? '')
   const accent = isOut ? '#b91c1c' : '#b45309'
   const bg = isOut ? '#fef2f2' : '#fffbeb'
   const border = isOut ? '#fecaca' : '#fde68a'
@@ -52,7 +48,7 @@ function alertHtml(product: any, level: 'out' | 'low') {
       <div style="font-size:17px;font-weight:800;color:${accent};margin-bottom:16px">${heading}</div>
       <table style="width:100%;font-size:13px;border-collapse:collapse;background:${bg};border:1px solid ${border};border-radius:10px;overflow:hidden">
         <tr><td style="padding:10px 14px;color:${label};font-weight:600">Product</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:#111">${product.name}</td></tr>
-        <tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Stock Left</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:${accent};border-top:1px solid ${border}">${isOut ? 0 : 3}</td></tr>
+        <tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Stock Left</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:${accent};border-top:1px solid ${border}">${stockLeft}</td></tr>
         ${product.category ? `<tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Category</td><td style="padding:10px 14px;text-align:right;border-top:1px solid ${border}">${product.category}</td></tr>` : ''}
         ${product.barcode ? `<tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Barcode</td><td style="padding:10px 14px;text-align:right;border-top:1px solid ${border}">${product.barcode}</td></tr>` : ''}
       </table>
@@ -113,7 +109,7 @@ Deno.serve(async (req) => {
     await client.send({
       from: `Gapuz POS <${senderEmail}>`,
       to: recipients,
-      subject: alertLevel === 'out' ? `Out of Stock: ${product.name}` : `Low Stock: ${product.name} (3 left)`,
+      subject: alertLevel === 'out' ? `Out of Stock: ${product.name}` : `Low Stock: ${product.name} (${product.stock ?? '≤3'} left)`,
       html: alertHtml(product, alertLevel),
     })
     await client.close()
