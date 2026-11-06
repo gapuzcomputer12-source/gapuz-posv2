@@ -13,17 +13,17 @@ const SidebarIcon = ({ children }) => (
 )
 
 const NAV = [
-  { section: { en:'', fil:'' }, items:[
+  { section: '', items:[
     { to:'/pos',       key:'pos',       icon: <SidebarIcon><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></SidebarIcon> },
     { to:'/dashboard', key:'dashboard', icon: <SidebarIcon><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></SidebarIcon> },
   ]},
-  { section: { en:'Management', fil:'Pamamahala' }, items:[
+  { section: 'Management', items:[
     { to:'/products',  key:'products',  icon: <SidebarIcon><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></SidebarIcon>, adminOnly:true },
     { to:'/customers', key:'customers', icon: <SidebarIcon><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></SidebarIcon> },
     { to:'/staff',     key:'staff_accounts', icon: <SidebarIcon><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></SidebarIcon>, adminOnly:true },
     { to:'/activity-log', key:'activity_log', icon: <SidebarIcon><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></SidebarIcon>, adminOnly:true },
   ]},
-  { section: { en:'Finance', fil:'Pinansyal' }, items:[
+  { section: 'Finance', items:[
     { to:'/reports',   key:'reports',   icon: <SidebarIcon><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></SidebarIcon>, adminOnly:true },
     { to:'/refunds',   key:'refunds',   icon: <SidebarIcon><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></SidebarIcon> },
   ]},
@@ -31,7 +31,7 @@ const NAV = [
 
 export default function Layout() {
   const { user, role, logout, updateProfile }           = useAuthStore()
-  const { theme, language, toggleTheme, refundsLastSeenAt } = useAppStore()
+  const { theme, toggleTheme, refundsLastSeenAt } = useAppStore()
   const refunds = useRefundStore(s=>s.refunds)
   const pendingUnseenRefunds = refunds.filter(r => r.status==='Pending' && (!refundsLastSeenAt || new Date(r.createdAt) > new Date(refundsLastSeenAt))).length
   const navigate  = useNavigate()
@@ -160,7 +160,7 @@ export default function Layout() {
           {NAV.map(section=>{
             const items = section.items.filter(i=>!i.adminOnly||role==='admin')
             if(!items.length) return null
-            const sectionLabel = section.section[language]||section.section.en
+            const sectionLabel = section.section
             return (
               <div key={sectionLabel||section.items[0].to}>
                 {sectionLabel && (

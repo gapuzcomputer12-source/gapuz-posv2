@@ -4,7 +4,6 @@ import {
   Headphones, Webcam, Printer, Router, Usb, Cable, Fan, BatteryCharging,
   Gamepad2, Smartphone, Tablet, Wrench, Package, Banknote, CreditCard, SplitSquareHorizontal,
 } from 'lucide-react'
-import { useAppStore } from '../store'
 import { translations } from '../i18n/translations'
 
 export const peso = (n) => '₱' + Number(n||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})
@@ -116,10 +115,7 @@ export const BADGE_SWATCHES = [
   { cls:'badge-red',    hex:'#ef4444' },
 ]
 
-export const useT = () => {
-  const lang = useAppStore(s=>s.language)
-  return (key) => translations[lang]?.[key] || translations['en']?.[key] || key
-}
+export const useT = () => (key) => translations[key] || key
 
 // Breakpoints: <=860px = mobile (stacked layouts, drawer nav), <=1180px = tablet (narrower panels)
 // Dedicated breakpoint for the login page's left/right split (desktop-leaning

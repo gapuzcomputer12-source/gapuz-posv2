@@ -184,7 +184,7 @@ A quick at-a-glance home screen with Overview and Inventory tabs for everyone, a
 Searchable, paginated audit trail of every tracked action: staff created/updated/suspended/reactivated/deleted, products created/updated/deleted/restocked, categories created/updated/deleted, customers deleted, refunds submitted/approved/rejected, **returns submitted/approved/rejected**. Entries cannot be edited or deleted once written (enforced at the database level).
 
 ### 5.11 Other
-- **Light/dark theme toggle** and **English/Filipino language toggle** (both persisted locally per device)
+- **Light/dark theme toggle** (persisted locally per device)
 - Responsive layout — adapts between desktop and mobile/tablet breakpoints
 
 ---
