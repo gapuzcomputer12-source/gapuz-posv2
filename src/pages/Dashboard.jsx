@@ -129,7 +129,7 @@ export default function Dashboard() {
 
   // ── INVENTORY ANALYTICS ───────────────────────────────────
   const totalValue = products.reduce((s,p)=>s+p.price*p.stock,0)
-  const lowStock   = products.filter(p=>p.stock>0&&p.stock<=5&&p.category!=='Services')
+  const lowStock   = products.filter(p=>p.stock>0&&p.stock<=3&&p.category!=='Services')
   const outStock   = products.filter(p=>p.stock===0&&p.category!=='Services')
   const catData    = useMemo(()=>{ const map={}; products.forEach(p=>{ map[p.category]=(map[p.category]||0)+1 }); return Object.entries(map).map(([name,value])=>({name,value})) },[products])
   const catRevenue = useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ const prod=products.find(p=>p.name===i.name); const cat=prod?.category||'Other'; map[cat]=(map[cat]||0)+i.qty*i.price })); return Object.entries(map).map(([name,value])=>({name,value:Math.round(value)})).sort((a,b)=>b.value-a.value) },[transactions,products])

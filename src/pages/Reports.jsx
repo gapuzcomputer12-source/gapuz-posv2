@@ -106,7 +106,7 @@ export default function Reports(){
 
   // ── INVENTORY ────────────────────────────────────────────
   const totalVal  = products.reduce((s,p)=>s+p.price*p.stock,0)
-  const lowStock  = products.filter(p=>p.stock>0&&p.stock<=5&&p.category!=='Services')
+  const lowStock  = products.filter(p=>p.stock>0&&p.stock<=3&&p.category!=='Services')
   const outStock  = products.filter(p=>p.stock===0&&p.category!=='Services')
   const oldStock  = products.filter(p=>{ const added=p.createdAt?new Date(p.createdAt):null; const lastSold=p.lastSoldAt?new Date(p.lastSoldAt):null; const daysSinceAdded=added?Math.floor((now-added)/(1000*60*60*24)):0; const daysSinceLastSold=lastSold?Math.floor((now-lastSold)/(1000*60*60*24)):999; return daysSinceAdded>90&&daysSinceLastSold>90 })
   const newStock  = products.filter(p=>{ const added=p.createdAt?new Date(p.createdAt):null; const days=added?Math.floor((now-added)/(1000*60*60*24)):999; return days<=30 })
@@ -163,51 +163,58 @@ export default function Reports(){
     const approvedRefundsInPeriod = refunds.filter(r => r.status==='Approved' && approvedDate(r)>=periodStart && approvedDate(r)<=now)
     const approvedReturnsInPeriod = returns.filter(r => r.status==='Approved' && r.method!=='Exchange' && approvedDate(r)>=periodStart && approvedDate(r)<=now)
 
-    const summary = [
-      'GAPUZ POS — SALES SUMMARY',
-      `Period,${period}`,
-      `Gross Sales,${metrics.grossSales.toFixed(2)}`,
-      `Refunds,${metrics.refundTotal.toFixed(2)}`,
-      `Returns,${metrics.returnTotal.toFixed(2)}`,
-      `Net Sales,${metrics.netSales.toFixed(2)}`,
-      `Gross VAT,${metrics.grossVat.toFixed(2)}`,
-      `Refunded VAT,${metrics.refundedVat.toFixed(2)}`,
-      `Net VAT,${metrics.netVat.toFixed(2)}`,
-      `Refund Rate,${metrics.refundRate.toFixed(1)}%`,
+    // Escape per RFC 4180 so names/notes containing commas or quotes can't
+    // shift columns when the file is opened in Excel.
+    const esc = v => { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s }
+    const row = (...cells) => cells.map(esc).join(',')
+    const money = n => Number(n||0).toFixed(2)
+
+    const lines = [
+      row('GAPUZ POS - SALES SUMMARY'),
+      row('Generated', new Date().toLocaleString('en-PH')),
       '',
-    ]
-
-    const txnRows = filtered.map(tx=>[
-      String(tx.id).padStart(4,'0'),
-      new Date(tx.createdAt).toLocaleString('en-PH'),
-      tx.customerName||'Walk-in',
-      (tx.items||[]).length,
-      tx.payment,
-      tx.subtotal,
-      tx.discAmt||0,
-      tx.vat||0,
-      tx.total,
-      tx.status||'Completed'
-    ])
-    const txnSection = [
-      'TRANSACTIONS',
-      'TXN#,Date & Time,Customer,Items,Payment,Subtotal,Discount,VAT,Total,Status',
-      ...txnRows.map(r=>r.join(',')),
+      row('Metric','Value'),
+      row('Period', period),
+      row('Gross Sales', money(metrics.grossSales)),
+      row('Refunds', money(metrics.refundTotal)),
+      row('Returns', money(metrics.returnTotal)),
+      row('Net Sales', money(metrics.netSales)),
+      row('Gross VAT', money(metrics.grossVat)),
+      row('Refunded VAT', money(metrics.refundedVat)),
+      row('Net VAT', money(metrics.netVat)),
+      row('Refund Rate', `${metrics.refundRate.toFixed(1)}%`),
       '',
+      row('TRANSACTIONS'),
+      row('TXN#','Date & Time','Customer','Items','Payment','Subtotal','Discount','VAT','Total','Status'),
+      ...filtered.map(tx=>row(
+        String(tx.id).padStart(4,'0'),
+        new Date(tx.createdAt).toLocaleString('en-PH'),
+        tx.customerName||'Walk-in',
+        (tx.items||[]).length,
+        tx.payment,
+        money(tx.subtotal),
+        money(tx.discAmt),
+        money(tx.vat),
+        money(tx.total),
+        tx.status||'Completed'
+      )),
+      '',
+      row('APPROVED REFUNDS/RETURNS'),
+      row('Type','#','Original TXN#','Approval Date','Amount'),
+      ...approvedRefundsInPeriod.map(r=>row('REFUND',`#${String(r.id).padStart(4,'0')}`,`#${String(r.transactionId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),money(r.total))),
+      ...approvedReturnsInPeriod.map(r=>row('RETURN',`RTN-${String(r.id).padStart(4,'0')}`,`#${String(r.txnId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),money(r.total))),
     ]
 
-    const approvedRows = [
-      ...approvedRefundsInPeriod.map(r=>['REFUND',`#${String(r.id).padStart(4,'0')}`,`#${String(r.transactionId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),r.total.toFixed(2)]),
-      ...approvedReturnsInPeriod.map(r=>['RETURN',`RTN-${String(r.id).padStart(4,'0')}`,`#${String(r.txnId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),r.total.toFixed(2)]),
-    ]
-    const approvedSection = [
-      'APPROVED REFUNDS/RETURNS',
-      'Type,#,Original TXN#,Approval Date,Amount',
-      ...approvedRows.map(r=>r.join(',')),
-    ]
-
-    const csv = [...summary, ...txnSection, ...approvedSection].join('\n')
-    const a = document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download=`gapuz-sales-report-${period.toLowerCase().replace(' ','-')}.csv`; a.click()
+    // Leading BOM + CRLF line endings so Excel detects UTF-8 (no mangled
+    // characters) and renders rows correctly instead of guessing ANSI.
+    const csv = String.fromCharCode(0xFEFF) + lines.join('\r\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `gapuz-sales-report-${period.toLowerCase().replace(' ','-')}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const Tip=({active,payload,label})=>{ if(!active||!payload?.length) return null; return <div className="card" style={{padding:'8px 12px',fontSize:12}}><div style={{color:'var(--text3)',marginBottom:3}}>{label}</div><div style={{fontFamily:"'JetBrains Mono',monospace",color:'var(--accent)'}}>{peso(payload[0].value)}</div></div> }

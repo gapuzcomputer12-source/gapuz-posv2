@@ -152,7 +152,7 @@ export default function Products() {
 
   const totalValue = products.reduce((s,p)=>s+p.price*p.stock,0)
   const outCount   = products.filter(p=>p.stock===0).length
-  const lowCount   = products.filter(p=>p.stock>0&&p.stock<=5).length
+  const lowCount   = products.filter(p=>p.stock>0&&p.stock<=3).length
 
   return (
     <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:20,gap:16}}>
@@ -230,7 +230,7 @@ export default function Products() {
                       <span style={{display:'inline-flex',alignItems:'baseline',gap:5,width:'fit-content',padding:'3px 9px 3px 7px',borderRadius:99,background:ss.bg,border:`1px solid ${ss.border}`}}>
                         <span style={{width:6,height:6,borderRadius:'50%',background:ss.color,flexShrink:0,alignSelf:'center'}}/>
                         {p.stock>0&&<span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:800,color:ss.color,lineHeight:1}}>{p.stock}</span>}
-                        <span style={{fontSize:10,fontWeight:600,color:ss.color,letterSpacing:'.01em'}}>{p.stock===0?'Out of stock':p.stock<=5?'left':'in stock'}{(() => {
+                        <span style={{fontSize:10,fontWeight:600,color:ss.color,letterSpacing:'.01em'}}>{p.stock===0?'Out of stock':p.stock<=3?'left':'in stock'}{(() => {
                           const now = new Date()
                           const added = p.createdAt ? new Date(p.createdAt) : null
                           const lastSold = p.lastSoldAt ? new Date(p.lastSoldAt) : null

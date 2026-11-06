@@ -50,7 +50,7 @@ export const resizeImage = (file, maxDim = 640, quality = 0.8) => new Promise((r
 
 export const stockStatus = (stock) => {
   if(stock===0)  return {label:'Out of stock',cls:'badge-red',   color:'var(--red)',   bg:'rgba(239,68,68,0.1)', border:'rgba(239,68,68,0.22)'}
-  if(stock<=5)   return {label:`${stock} left`,cls:'badge-yellow',color:'var(--yellow)',bg:'rgba(245,158,11,0.1)', border:'rgba(245,158,11,0.22)'}
+  if(stock<=3)   return {label:`${stock} left`,cls:'badge-yellow',color:'var(--yellow)',bg:'rgba(245,158,11,0.1)', border:'rgba(245,158,11,0.22)'}
   return               {label:`${stock} in stock`,cls:'badge-green', color:'var(--green)', bg:'rgba(34,197,94,0.1)',border:'rgba(34,197,94,0.2)'}
 }
 

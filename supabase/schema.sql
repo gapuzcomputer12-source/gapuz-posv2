@@ -312,7 +312,7 @@ ORDER BY c.points DESC;
 -- overselling. Runs with the calling user's own privileges (no SECURITY
 -- DEFINER), so the normal products RLS policies still apply.
 CREATE OR REPLACE FUNCTION deduct_stock(items jsonb)
-RETURNS TABLE (out_id int, out_stock int, out_zeroed boolean)
+RETURNS TABLE (out_id int, out_stock int, out_zeroed boolean, out_low boolean)
 LANGUAGE plpgsql
 AS $$
 DECLARE
@@ -339,6 +339,10 @@ BEGIN
     out_id     := v_id;
     out_stock  := v_next;
     out_zeroed := (v_prev > 0 AND v_next = 0);
+    -- Only fires on the exact crossing into 3 left, not every low value
+    -- (1-2 stays silent) — otherwise a busy register would spam admins
+    -- with one email per unit sold while stock drains from 3 down to 0.
+    out_low    := (v_prev > 3 AND v_next = 3);
     RETURN NEXT;
   END LOOP;
 END;

@@ -8,7 +8,7 @@ import Cart from '../components/Cart'
 function ProductCard({ product, onAdd, isLight, bodyText, catColor }) {
   const { stock, name, image, icon, price, category } = product
   const isOut = stock === 0
-  const isLow = stock > 0 && stock <= 5
+  const isLow = stock > 0 && stock <= 3
   const mutedText = isLight ? '#4b5563' : 'var(--text3)'
 
   return (

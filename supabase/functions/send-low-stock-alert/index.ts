@@ -1,10 +1,13 @@
 // Supabase Edge Function: send-low-stock-alert
-// Emails every active admin when a product's stock crosses from above zero
-// down to zero. Called from the frontend store the moment that happens
-// (checkout deducting the last unit, or an admin editing stock to 0) — not
-// on a poll, so each zero-crossing fires at most once. Any signed-in user
-// may call it (a cashier can trigger it at checkout), but the admin
-// recipient list and SMTP credentials stay server-side.
+// Emails every active admin when a product's stock crosses down to one of
+// two thresholds: exactly 3 left (level: 'low') or exactly 0 left (level:
+// 'out'). Called from the frontend store the moment either crossing
+// happens (checkout deducting stock, or an admin editing stock directly) —
+// not on a poll, so each crossing fires at most once. Stock values of 1
+// and 2 are deliberately silent, so a single sale that drains several
+// units at once doesn't fire one email per unit on the way down. Any
+// signed-in user may call it (a cashier can trigger it at checkout), but
+// the admin recipient list and SMTP credentials stay server-side.
 //
 // Reuses the same Brevo SMTP secrets already set up for send-receipt:
 //   BREVO_SMTP_LOGIN, BREVO_SMTP_KEY, SENDER_EMAIL
@@ -25,7 +28,17 @@ const json = (body: unknown, status = 200) =>
 const LOGO_URL = 'https://gapuz-pos.vercel.app/logo.jpg'
 const APP_URL = 'https://gapuz-pos.vercel.app'
 
-function alertHtml(product: any) {
+// level 'out' -> stock hit exactly 0. level 'low' -> stock crossed down to
+// exactly 3 (the only two thresholds that email — 1 and 2 stay silent so a
+// single busy sale doesn't fire a message per unit as stock drains).
+function alertHtml(product: any, level: 'out' | 'low') {
+  const isOut = level === 'out'
+  const accent = isOut ? '#b91c1c' : '#b45309'
+  const bg = isOut ? '#fef2f2' : '#fffbeb'
+  const border = isOut ? '#fecaca' : '#fde68a'
+  const label = isOut ? '#7f1d1d' : '#92400e'
+  const emoji = isOut ? '⚠️' : '📦'
+  const heading = isOut ? 'Product Out of Stock' : 'Product Running Low'
   return `
   <div style="max-width:420px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.08);font-family:Arial,sans-serif">
     <div style="background:#059669;padding:22px 20px;text-align:center">
@@ -35,12 +48,13 @@ function alertHtml(product: any) {
     </div>
 
     <div style="padding:26px 24px;text-align:center;color:#111">
-      <div style="font-size:34px;margin-bottom:8px">⚠️</div>
-      <div style="font-size:17px;font-weight:800;color:#b91c1c;margin-bottom:16px">Product Out of Stock</div>
-      <table style="width:100%;font-size:13px;border-collapse:collapse;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;overflow:hidden">
-        <tr><td style="padding:10px 14px;color:#7f1d1d;font-weight:600">Product</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:#111">${product.name}</td></tr>
-        ${product.category ? `<tr><td style="padding:10px 14px;color:#7f1d1d;font-weight:600;border-top:1px solid #fecaca">Category</td><td style="padding:10px 14px;text-align:right;border-top:1px solid #fecaca">${product.category}</td></tr>` : ''}
-        ${product.barcode ? `<tr><td style="padding:10px 14px;color:#7f1d1d;font-weight:600;border-top:1px solid #fecaca">Barcode</td><td style="padding:10px 14px;text-align:right;border-top:1px solid #fecaca">${product.barcode}</td></tr>` : ''}
+      <div style="font-size:34px;margin-bottom:8px">${emoji}</div>
+      <div style="font-size:17px;font-weight:800;color:${accent};margin-bottom:16px">${heading}</div>
+      <table style="width:100%;font-size:13px;border-collapse:collapse;background:${bg};border:1px solid ${border};border-radius:10px;overflow:hidden">
+        <tr><td style="padding:10px 14px;color:${label};font-weight:600">Product</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:#111">${product.name}</td></tr>
+        <tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Stock Left</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:${accent};border-top:1px solid ${border}">${isOut ? 0 : 3}</td></tr>
+        ${product.category ? `<tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Category</td><td style="padding:10px 14px;text-align:right;border-top:1px solid ${border}">${product.category}</td></tr>` : ''}
+        ${product.barcode ? `<tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Barcode</td><td style="padding:10px 14px;text-align:right;border-top:1px solid ${border}">${product.barcode}</td></tr>` : ''}
       </table>
       <a href="${APP_URL}/products" style="display:inline-block;margin-top:20px;padding:11px 26px;background:#059669;color:#ffffff;border-radius:8px;text-decoration:none;font-weight:800;font-size:13px">Restock Now →</a>
     </div>
@@ -66,10 +80,11 @@ Deno.serve(async (req) => {
     const { data: { user: caller }, error: callerErr } = await supabaseAdmin.auth.getUser(jwt)
     if (callerErr || !caller) return json({ error: 'Invalid session' }, 401)
 
-    const { product } = await req.json()
+    const { product, level } = await req.json()
     if (!product || typeof product !== 'object' || !product.name) {
       return json({ error: 'Product is required' }, 400)
     }
+    const alertLevel: 'out' | 'low' = level === 'low' ? 'low' : 'out'
 
     const { data: admins } = await supabaseAdmin
       .from('profiles')
@@ -98,8 +113,8 @@ Deno.serve(async (req) => {
     await client.send({
       from: `Gapuz POS <${senderEmail}>`,
       to: recipients,
-      subject: `Out of Stock: ${product.name}`,
-      html: alertHtml(product),
+      subject: alertLevel === 'out' ? `Out of Stock: ${product.name}` : `Low Stock: ${product.name} (3 left)`,
+      html: alertHtml(product, alertLevel),
     })
     await client.close()
 

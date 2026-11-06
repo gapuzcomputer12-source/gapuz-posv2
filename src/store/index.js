@@ -95,9 +95,11 @@ const LOG_SELECT = 'id:log_id, actorName:actor_name, action, entityType:entity_t
 
 // Fire-and-forget: emails every active admin via the send-low-stock-alert
 // edge function. Call this only at the moment a product's stock crosses
-// from above zero down to zero, never on a poll, so it fires once per event.
-function notifyLowStock(product) {
-  supabase.functions.invoke('send-low-stock-alert', { body: { product } })
+// down to exactly 3 (level 'low') or exactly 0 (level 'out'), never on a
+// poll and never for 1-2, so it fires once per crossing instead of once
+// per unit sold while stock drains.
+function notifyLowStock(product, level = 'out') {
+  supabase.functions.invoke('send-low-stock-alert', { body: { product, level } })
     .then(({ error }) => { if (error) console.error('low-stock alert failed:', error.message) })
 }
 
@@ -243,8 +245,10 @@ export const useProductStore = create((set, get) => ({
     if (!error) {
       set(s => ({ products: s.products.map(p => p.id === id ? { ...p, ...data } : p) }))
       logActivity('updated', 'product', data.name || prev?.name)
-      if ('stock' in data && prev?.stock > 0 && data.stock === 0) {
-        notifyLowStock({ name: data.name || prev?.name, category: data.category || prev?.category, barcode: data.barcode || prev?.barcode })
+      if ('stock' in data) {
+        const alertProduct = { name: data.name || prev?.name, category: data.category || prev?.category, barcode: data.barcode || prev?.barcode }
+        if (prev?.stock > 0 && data.stock === 0) notifyLowStock(alertProduct, 'out')
+        else if (prev?.stock > 3 && data.stock === 3) notifyLowStock(alertProduct, 'low')
       }
     }
   },
@@ -269,17 +273,18 @@ export const useProductStore = create((set, get) => ({
     })
     if (error) { console.error('deductStock failed:', error.message); return }
     const byId = new Map(data.map(r => [r.out_id, r]))
-    const zeroedOut = []
+    const alerts = []
     set(s => ({
       products: s.products.map(p => {
         const r = byId.get(p.id)
         if (!r) return p
-        if (r.out_zeroed) zeroedOut.push({ name: p.name, category: p.category, barcode: p.barcode })
+        if (r.out_zeroed) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode }, 'out'])
+        else if (r.out_low) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode }, 'low'])
         const ci = items.find(i => i.id === p.id)
         return { ...p, stock: r.out_stock, sold: (p.sold || 0) + (ci?.qty || 0) }
       })
     }))
-    zeroedOut.forEach(notifyLowStock)
+    alerts.forEach(([product, level]) => notifyLowStock(product, level))
   },
 
   restockProduct: async (id, qty) => {
