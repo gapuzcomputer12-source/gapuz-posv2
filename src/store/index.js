@@ -196,6 +196,7 @@ export const useAppStore = create(
       theme: 'light',
       language: 'en',
       revenueView: 'net',
+      refundsLastSeenAt: null,
       toggleTheme: () => {
         const next = get().theme === 'dark' ? 'light' : 'dark'
         document.documentElement.classList.toggle('light', next === 'light')
@@ -203,8 +204,12 @@ export const useAppStore = create(
       },
       toggleLanguage: () => set(s => ({ language: s.language === 'en' ? 'fil' : 'en' })),
       setRevenueView: (view) => set({ revenueView: view }),
+      // Called when the Refunds page mounts — clears the sidebar's pending-
+      // request badge by marking everything pending as of now "seen". Any
+      // refund submitted after this moment still counts as new.
+      markRefundsSeen: () => set({ refundsLastSeenAt: new Date().toISOString() }),
     }),
-    { name: 'gapuz-app', partialize: s => ({ theme: s.theme, language: s.language, revenueView: s.revenueView }) }
+    { name: 'gapuz-app', partialize: s => ({ theme: s.theme, language: s.language, revenueView: s.revenueView, refundsLastSeenAt: s.refundsLastSeenAt }) }
   )
 )
 

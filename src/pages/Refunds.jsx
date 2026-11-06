@@ -6,6 +6,9 @@ import { useToast } from '../utils/toast'
 import { useT, peso, fmtDate, REFUND_REASONS } from '../utils/helpers'
 import RefundDetailsModal, { StatusBadge, METHOD_ICON } from '../components/RefundDetailsModal'
 import ProductThumb from '../components/ProductThumb'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 const REFUND_METHODS = ['Cash', 'GCash', 'Store Credit']
 
@@ -20,7 +23,7 @@ export default function Refunds() {
   const t = useT()
   const toast = useToast()
   const { role, user } = useAuthStore()
-  const { theme } = useAppStore()
+  const { theme, markRefundsSeen } = useAppStore()
   const { transactions, updateTransaction } = useTransactionStore()
   const { products, restockProduct } = useProductStore()
   const { refunds, addRefund, updateRefund } = useRefundStore()
@@ -47,19 +50,23 @@ export default function Refunds() {
   })
 
   // ── Stats ─────────────────────────────────────────────────
+  const pendingCount = useMemo(() => refunds.filter(r => r.status === 'Pending').length, [refunds])
   const stats = useMemo(() => {
-    const pending = refunds.filter(r => r.status === 'Pending').length
     const approved = refunds.filter(r => r.status === 'Approved').length
     const totalRefunded = refunds
       .filter(r => r.status === 'Approved')
       .reduce((s, r) => s + r.total, 0)
     return [
       { label: 'Total Refunds',  value: refunds.length, color: isLight ? '#2563eb' : 'var(--blue)',   icon: ClipboardList },
-      { label: 'Pending',        value: pending,         color: isLight ? '#d97706' : 'var(--yellow)', icon: Clock },
+      { label: 'Pending',        value: pendingCount,    color: isLight ? '#d97706' : 'var(--yellow)', icon: Clock },
       { label: 'Approved',       value: approved,        color: isLight ? '#059669' : 'var(--accent)', icon: CheckCircle2 },
       { label: 'Total Refunded', value: peso(totalRefunded), color: isLight ? '#dc2626' : 'var(--red)', icon: RefreshCw },
     ]
-  }, [refunds, isLight])
+  }, [refunds, pendingCount, isLight])
+
+  // Admin reviews/approves requests here, so the tab shows how many are
+  // waiting — cashiers just see the page they submit requests from.
+  useDocumentTitle(isAdmin ? (pendingCount > 0 ? `(${pendingCount}) Refund Approval` : 'Refund Approval') : 'Returns & Refunds')
 
   // ── Filtered refunds table ────────────────────────────────
   const filteredRefunds = useMemo(() =>
@@ -68,6 +75,8 @@ export default function Refunds() {
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
     [refunds, filterStatus]
   )
+  const refundsPg = usePagination(filteredRefunds)
+  useEffect(() => { refundsPg.setPage(1) }, [filterStatus])
 
   const calcTotals = () => {
     if (!selectedTxn) return { subtotal: 0, vat: 0, total: 0 }
@@ -96,6 +105,9 @@ export default function Refunds() {
     await updateTransaction(txn.id, { status: fullRefund ? 'Refunded' : 'Partially Refunded' })
     if (txn.customerId) await revertPurchase(txn.customerId, { refundTotal: r.total, fullRefund })
   }
+
+  // Clears the sidebar's pending-request badge the moment this page is opened.
+  useEffect(() => { markRefundsSeen() }, [])
 
   // One-time reconciliation for refunds that were approved before this sync existed.
   const reconciled = useRef(false)
@@ -628,7 +640,7 @@ export default function Refunds() {
                     <RefreshCw size={32} style={{ opacity: .2, marginBottom: 8 }}/>
                     <div>No refunds found</div>
                   </td></tr>
-                ) : filteredRefunds.map(r => (
+                ) : refundsPg.pageItems.map(r => (
                   <tr key={r.id} className="refund-row" style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => setViewRefund(r)}>
                     <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isLight ? '#059669' : 'var(--accent)', fontWeight: 700 }}>#{String(r.id).padStart(4, '0')}</td>
                     <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>#{String(r.transactionId).padStart(4, '0')}</td>
@@ -653,6 +665,8 @@ export default function Refunds() {
               </tbody>
             </table>
           </div>
+
+          <div style={{ padding: '0 20px', flexShrink: 0 }}><Pagination {...refundsPg}/></div>
 
           {/* Footer note */}
           <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>

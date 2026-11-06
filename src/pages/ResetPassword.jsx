@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store'
 import { useToast } from '../utils/toast'
 import { supabase } from '../lib/supabaseClient'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
 // Module-scoped so the verification survives React StrictMode's dev-only double
 // effect invocation (mount → cleanup → remount) — without this, the second
@@ -11,6 +12,7 @@ import { supabase } from '../lib/supabaseClient'
 let verifyInFlight = null
 
 export default function ResetPassword() {
+  useDocumentTitle('Reset Password')
   const [password, setPassword]               = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [loading, setLoading]                 = useState(false)

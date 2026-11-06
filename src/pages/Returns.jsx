@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ClipboardList, Clock, CheckCircle2, RefreshCw, Search, Package, AlertTriangle, Check, X, Eye } from 'lucide-react'
 import { useTransactionStore, useAuthStore, useProductStore, useAppStore } from '../store'
@@ -6,6 +6,9 @@ import { useReturnStore } from '../store/useReturnStore'
 import { useToast } from '../utils/toast'
 import { useT, REFUND_REASONS, peso, fmtDate } from '../utils/helpers'
 import RefundDetailsModal, { StatusBadge, METHOD_ICON } from '../components/RefundDetailsModal'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 // 'Exchange' hands back merchandise, not money — Gross vs Net sales
 // reporting (src/utils/salesMetrics.js) only deducts the cash/GCash/store
@@ -20,6 +23,7 @@ const STEPS = [
 ]
 
 export default function Returns() {
+  useDocumentTitle('Returns')
   const t                  = useT()
   const toast              = useToast()
   const { role, user }     = useAuthStore()
@@ -68,6 +72,8 @@ export default function Returns() {
     returns.filter(r => filterStatus === 'All' || r.status === filterStatus),
     [returns, filterStatus]
   )
+  const returnsPg = usePagination(filteredReturns)
+  useEffect(() => { returnsPg.setPage(1) }, [filterStatus])
 
   // ── Totals calculation ────────────────────────────────────
   const calcTotals = () => {
@@ -499,7 +505,7 @@ export default function Returns() {
                     <RefreshCw size={32} style={{ opacity: .2, marginBottom: 8 }}/>
                     <div>No returns found</div>
                   </td></tr>
-                ) : filteredReturns.map(r => (
+                ) : returnsPg.pageItems.map(r => (
                   <tr key={r.id} className="refund-row" style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => setViewReturn(r)}>
                     <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isLight ? '#059669' : 'var(--accent)', fontWeight: 700 }}>RTN-{String(r.id).padStart(4, '0')}</td>
                     <td style={{ padding: '11px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>#{String(r.txnId).padStart(4, '0')}</td>
@@ -537,6 +543,8 @@ export default function Returns() {
               </tbody>
             </table>
           </div>
+
+          <div style={{ padding: '0 20px', flexShrink: 0 }}><Pagination {...returnsPg}/></div>
 
           {/* Footer note */}
           <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>

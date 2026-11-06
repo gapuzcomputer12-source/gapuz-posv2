@@ -4,6 +4,9 @@ import { useProductStore, useAppStore, useCategoryStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, peso, stockStatus, genBarcode, categoryIcon, resizeImage, ICON_MAP, ICON_OPTIONS, BADGE_SWATCHES } from '../utils/helpers'
 import ProductThumb from '../components/ProductThumb'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'' }
 
@@ -28,6 +31,7 @@ function IconPicker({ value, onChange, mutedText }) {
 }
 
 export default function Products() {
+  useDocumentTitle('Inventory')
   const { products, loading, addProduct, updateProduct, deleteProduct, restockProduct } = useProductStore()
   const { categories, addCategory, updateCategory, deleteCategory } = useCategoryStore()
   const [search,    setSearch]    = useState('')
@@ -38,16 +42,12 @@ export default function Products() {
   const [selected,  setSelected]  = useState(null)
   const [restockQty,setRestockQty]= useState('')
   const [lossConfirm,setLossConfirm]= useState(null)
-  const [page,      setPage]      = useState(1)
   const [newCatName, setNewCatName] = useState('')
   const [newCatColor,setNewCatColor]= useState(BADGE_SWATCHES[0].cls)
   const [newCatIcon, setNewCatIcon] = useState('')
-  const [catPage,    setCatPage]    = useState(1)
   const [editingCatId,setEditingCatId]=useState(null)
   const [editColor,  setEditColor]  = useState(BADGE_SWATCHES[0].cls)
   const [editIcon,   setEditIcon]   = useState('')
-  const PAGE_SIZE = 6
-  const CAT_PAGE_SIZE = 5
   const { theme } = useAppStore()
   const toast = useToast()
   const t     = useT()
@@ -117,7 +117,7 @@ export default function Products() {
     if(!added) return toast('Failed to add category','error')
     toast('Category added','success')
     setNewCatName(''); setNewCatIcon('')
-    setCatPage(Math.max(1, Math.ceil((categories.length+1)/CAT_PAGE_SIZE)))
+    catPg.setPage(Math.max(1, Math.ceil((categories.length+1)/8)))
   }
 
   const handleDeleteCategory = async (cat) => {
@@ -141,14 +141,10 @@ export default function Products() {
     .filter(p=>(catFilter==='All'||p.category===catFilter)&&(!search||p.name.toLowerCase().includes(search.toLowerCase())||(p.barcode||'').toLowerCase().includes(search.toLowerCase())))
     .sort((a,b)=>{ if(sortBy==='name') return a.name.localeCompare(b.name); if(sortBy==='price-asc') return a.price-b.price; if(sortBy==='price-desc') return b.price-a.price; if(sortBy==='stock') return b.stock-a.stock; if(sortBy==='sold') return (b.sold||0)-(a.sold||0); return 0 })
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length/PAGE_SIZE))
-  useEffect(()=>{ setPage(1) }, [search, catFilter, sortBy])
-  useEffect(()=>{ if(page>totalPages) setPage(totalPages) }, [totalPages])
-  const pageItems = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE)
+  const pg = usePagination(filtered)
+  useEffect(()=>{ pg.setPage(1) }, [search, catFilter, sortBy])
 
-  const catTotalPages = Math.max(1, Math.ceil(categories.length/CAT_PAGE_SIZE))
-  useEffect(()=>{ if(catPage>catTotalPages) setCatPage(catTotalPages) }, [catTotalPages])
-  const catPageItems = categories.slice((catPage-1)*CAT_PAGE_SIZE, catPage*CAT_PAGE_SIZE)
+  const catPg = usePagination(categories)
 
   const totalValue = products.reduce((s,p)=>s+p.price*p.stock,0)
   const outCount   = products.filter(p=>p.stock===0).length
@@ -185,7 +181,7 @@ export default function Products() {
         <select className="select-field" value={sortBy} onChange={e=>setSortBy(e.target.value)}>
           <option value="name">Name A–Z</option><option value="price-asc">Price ↑</option><option value="price-desc">Price ↓</option><option value="stock">Stock</option><option value="sold">Best Selling</option>
         </select>
-        <button onClick={()=>{setCatPage(1);setEditingCatId(null);setModal('categories')}} className="btn-secondary" style={{fontSize:12,display:'flex',alignItems:'center',gap:6}}><Tags size={14}/>Categories</button>
+        <button onClick={()=>{catPg.setPage(1);setEditingCatId(null);setModal('categories')}} className="btn-secondary" style={{fontSize:12,display:'flex',alignItems:'center',gap:6}}><Tags size={14}/>Categories</button>
       </div>
       <div style={{flex:1,overflowY:'auto'}}>
         <div className="tbl-wrap">
@@ -201,7 +197,7 @@ export default function Products() {
                 </div>
               </td></tr>
               :filtered.length===0?<tr><td colSpan={9} style={{textAlign:'center',padding:40,color:mutedText}}>{t('no_data')}</td></tr>
-              :pageItems.map(p=>{
+              :pg.pageItems.map(p=>{
                 const profit=p.costPrice?((p.price-p.costPrice)/p.price*100).toFixed(1):'—'
                 const ss=stockStatus(p.stock)
                 return(<tr key={p.id}>
@@ -255,17 +251,7 @@ export default function Products() {
           </table>
         </div>
       </div>
-      {totalPages>1&&(
-        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:14,flexShrink:0,paddingTop:4}}>
-          <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:page===1?0.5:1,cursor:page===1?'not-allowed':'pointer'}}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-          </button>
-          <div style={{fontSize:11.5,color:mutedText,fontWeight:600}}>{page} of {totalPages}</div>
-          <button onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={page===totalPages} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:page===totalPages?0.5:1,cursor:page===totalPages?'not-allowed':'pointer'}}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-          </button>
-        </div>
-      )}
+      <Pagination {...pg}/>
       {(modal==='add'||modal==='edit')&&(
         <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&setModal(null)}>
           <div className="card animate-scale-in" style={{width:'min(480px,92vw)',padding:28,maxHeight:'90vh',overflowY:'auto'}}>
@@ -326,9 +312,9 @@ export default function Products() {
           <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:28,maxHeight:'85vh',display:'flex',flexDirection:'column'}}>
             <div style={{fontSize:15,fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:6}}><Tags size={14} style={{color:'var(--accent)'}}/>Manage Categories</div>
 
-            <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:6,marginBottom:8,minHeight:CAT_PAGE_SIZE*38}}>
+            <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:6,marginBottom:8,minHeight:8*38}}>
               {categories.length===0?<div style={{color:mutedText,fontSize:12,textAlign:'center',padding:20}}>No categories yet.</div>
-              :catPageItems.map(c=>{
+              :catPg.pageItems.map(c=>{
                 const count = products.filter(p=>p.category===c.name).length
                 const hex = BADGE_SWATCHES.find(s=>s.cls===c.badgeColor)?.hex || '#34d399'
                 const CatIcon = (c.icon && ICON_MAP[c.icon]) || categoryIcon(c.name)
@@ -360,17 +346,7 @@ export default function Products() {
                 )
               })}
             </div>
-            {catTotalPages>1&&(
-              <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:14,marginBottom:16}}>
-                <button onClick={()=>setCatPage(p=>Math.max(1,p-1))} disabled={catPage===1} className="btn-secondary" style={{padding:'5px 9px',display:'flex',alignItems:'center',opacity:catPage===1?0.5:1,cursor:catPage===1?'not-allowed':'pointer'}}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-                </button>
-                <div style={{fontSize:11,color:mutedText,fontWeight:600}}>{catPage} of {catTotalPages}</div>
-                <button onClick={()=>setCatPage(p=>Math.min(catTotalPages,p+1))} disabled={catPage===catTotalPages} className="btn-secondary" style={{padding:'5px 9px',display:'flex',alignItems:'center',opacity:catPage===catTotalPages?0.5:1,cursor:catPage===catTotalPages?'not-allowed':'pointer'}}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-                </button>
-              </div>
-            )}
+            <Pagination {...catPg}/>
 
             <div style={{borderTop:'1px solid var(--border)',paddingTop:16}}>
               <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:6,textTransform:'uppercase',letterSpacing:'.5px'}}>New Category</label>

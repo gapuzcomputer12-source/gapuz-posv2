@@ -9,6 +9,9 @@ import { computeSalesMetrics, getDailySeries } from '../utils/salesMetrics'
 import { CHART_COLORS, ACCENT, RED, YELLOW, PURPLE, SLATE } from '../utils/colors'
 import ProductThumb from '../components/ProductThumb'
 import SalesBreakdownCard from '../components/SalesBreakdownCard'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 const COLORS = CHART_COLORS
 
@@ -81,6 +84,7 @@ function StatCard({ label, value, color }) {
 }
 
 export default function Dashboard() {
+  useDocumentTitle('Dashboard')
   const transactions = useTransactionStore(s=>s.transactions)
   const products     = useProductStore(s=>s.products)
   const customers    = useCustomerStore(s=>s.customers)
@@ -94,10 +98,6 @@ export default function Dashboard() {
   const t            = useT()
   const [activeTab,  setActiveTab] = useState('overview')
   const [repPeriod,  setRepPeriod] = useState('today')
-  const [leastPage,  setLeastPage] = useState(1)
-  const [txPage,     setTxPage]    = useState(1)
-  const LEAST_PAGE_SIZE = 5
-  const TX_PAGE_SIZE    = 7
 
   const now   = new Date()
   const today = startOfDay(now)
@@ -120,17 +120,15 @@ export default function Dashboard() {
   const payBreak  = useMemo(()=>{ const map={}; transactions.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})) },[transactions])
   const topProds  = useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); return Object.values(map).sort((a,b)=>b.sold-a.sold).slice(0,5) },[transactions])
   const leastProds= useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); products.forEach(p=>{ if(!map[p.name]) map[p.name]={name:p.name,sold:0,revenue:0} }); return Object.values(map).sort((a,b)=>a.sold-b.sold) },[transactions,products])
-  const leastTotalPages = Math.max(1, Math.ceil(leastProds.length/LEAST_PAGE_SIZE))
-  const leastPageItems  = useMemo(()=>leastProds.slice((leastPage-1)*LEAST_PAGE_SIZE, leastPage*LEAST_PAGE_SIZE),[leastProds,leastPage])
-  const txTotalPages    = Math.max(1, Math.ceil(transactions.length/TX_PAGE_SIZE))
-  const txPageItems     = useMemo(()=>transactions.slice((txPage-1)*TX_PAGE_SIZE, txPage*TX_PAGE_SIZE),[transactions,txPage])
-  useEffect(()=>{ if(leastPage>leastTotalPages) setLeastPage(leastTotalPages) },[leastTotalPages])
-  useEffect(()=>{ if(txPage>txTotalPages) setTxPage(txTotalPages) },[txTotalPages])
+  const leastPg = usePagination(leastProds)
+  const txPg    = usePagination(transactions)
 
   // ── INVENTORY ANALYTICS ───────────────────────────────────
   const totalValue = products.reduce((s,p)=>s+p.price*p.stock,0)
   const lowStock   = products.filter(p=>p.stock>0&&p.stock<=3&&p.category!=='Services')
   const outStock   = products.filter(p=>p.stock===0&&p.category!=='Services')
+  const lowStockPg  = usePagination(lowStock)
+  const outStockPg  = usePagination(outStock)
   const catData    = useMemo(()=>{ const map={}; products.forEach(p=>{ map[p.category]=(map[p.category]||0)+1 }); return Object.entries(map).map(([name,value])=>({name,value})) },[products])
   const catRevenue = useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ const prod=products.find(p=>p.name===i.name); const cat=prod?.category||'Other'; map[cat]=(map[cat]||0)+i.qty*i.price })); return Object.entries(map).map(([name,value])=>({name,value:Math.round(value)})).sort((a,b)=>b.value-a.value) },[transactions,products])
 
@@ -167,6 +165,8 @@ export default function Dashboard() {
     return startOfMonth(now)
   },[repPeriod,now])
   const repFiltered = useMemo(()=>transactions.filter(tx=>new Date(tx.createdAt)>=repStart),[transactions,repStart])
+  const repFilteredPg = usePagination(repFiltered)
+  useEffect(()=>{ repFilteredPg.setPage(1) },[repPeriod])
   const repMetrics  = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: repStart, to: now }),[transactions,refunds,returns,repStart,now])
   const repAvg      = repMetrics.transactionCount?Math.round(repMetrics.netSales/repMetrics.transactionCount):0
   const repChartData = useMemo(()=>{
@@ -291,9 +291,9 @@ export default function Dashboard() {
           <div style={{fontSize:11,color:'var(--text3)',marginBottom:14}}>Products with the lowest sales — consider promotions or restocking decisions</div>
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {leastProds.length===0?<div style={{color:'var(--text3)',fontSize:12,textAlign:'center',padding:'20px 0'}}>No sales data yet.</div>
-            :leastPageItems.map((p,i)=>(
+            :leastPg.pageItems.map((p,i)=>(
               <div key={p.name} style={{display:'flex',alignItems:'center',gap:10}}>
-                <span style={{fontSize:11,color:'var(--red)',fontFamily:"'JetBrains Mono',monospace",width:18}}>{(leastPage-1)*LEAST_PAGE_SIZE+i+1}</span>
+                <span style={{fontSize:11,color:'var(--red)',fontFamily:"'JetBrains Mono',monospace",width:18}}>{leastPg.start+i}</span>
                 <ProductThumb {...(products.find(pr=>pr.name===p.name)||{})} size={24} radius={6}/>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div>
@@ -306,17 +306,7 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
-          {leastTotalPages>1&&(
-            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:14,marginTop:16}}>
-              <button onClick={()=>setLeastPage(p=>Math.max(1,p-1))} disabled={leastPage===1} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:leastPage===1?0.5:1,cursor:leastPage===1?'not-allowed':'pointer'}}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-              </button>
-              <div style={{fontSize:11.5,color:'var(--text3)',fontWeight:600}}>{leastPage} of {leastTotalPages}</div>
-              <button onClick={()=>setLeastPage(p=>Math.min(leastTotalPages,p+1))} disabled={leastPage===leastTotalPages} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:leastPage===leastTotalPages?0.5:1,cursor:leastPage===leastTotalPages?'not-allowed':'pointer'}}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-              </button>
-            </div>
-          )}
+          <Pagination {...leastPg}/>
         </div>
 
         {/* ALERTS */}
@@ -349,7 +339,7 @@ export default function Dashboard() {
               <thead><tr>{['TXN #','Time','Customer','Items','Payment','Total'].map(h=><th key={h}>{h}</th>)}</tr></thead>
               <tbody>
                 {transactions.length===0?<tr><td colSpan={6} style={{textAlign:'center',padding:40,color:'var(--text3)'}}>{t('no_data')}</td></tr>
-                :txPageItems.map(tx=>(
+                :txPg.pageItems.map(tx=>(
                   <tr key={tx.id}>
                     <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--accent)'}}>#{String(tx.id).padStart(4,'0')}</td>
                     <td style={{fontSize:11,color:'var(--text3)'}}>{new Date(tx.createdAt).toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit'})}</td>
@@ -362,17 +352,7 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
-          {txTotalPages>1&&(
-            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:14,marginTop:12}}>
-              <button onClick={()=>setTxPage(p=>Math.max(1,p-1))} disabled={txPage===1} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:txPage===1?0.5:1,cursor:txPage===1?'not-allowed':'pointer'}}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-              </button>
-              <div style={{fontSize:11.5,color:'var(--text3)',fontWeight:600}}>{txPage} of {txTotalPages}</div>
-              <button onClick={()=>setTxPage(p=>Math.min(txTotalPages,p+1))} disabled={txPage===txTotalPages} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:txPage===txTotalPages?0.5:1,cursor:txPage===txTotalPages?'not-allowed':'pointer'}}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-              </button>
-            </div>
-          )}
+          <Pagination {...txPg}/>
         </div>
       </>}
 
@@ -409,31 +389,37 @@ export default function Dashboard() {
         </div>
 
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:14}}>
-          <div className="card" style={{padding:20,borderTop:'2px solid var(--yellow)'}}>
+          <div className="card" style={{padding:20,borderTop:'2px solid var(--yellow)',display:'flex',flexDirection:'column'}}>
             <div style={{fontWeight:600,fontSize:13,marginBottom:12,display:'flex',alignItems:'center',gap:6}}><AlertTriangle size={13} style={{color:'var(--yellow)'}}/>Low Stock Products</div>
-            {lowStock.length===0?<div style={{color:'var(--text3)',fontSize:12,textAlign:'center',padding:20}}>All products have healthy stock!</div>
-            :lowStock.map(p=>(
-              <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
-                <div>
-                  <div style={{fontSize:12,fontWeight:500}}>{p.name}</div>
-                  <div style={{fontSize:10,color:'var(--text3)'}}>{p.category}</div>
+            <div style={{flex:1}}>
+              {lowStock.length===0?<div style={{color:'var(--text3)',fontSize:12,textAlign:'center',padding:20}}>All products have healthy stock!</div>
+              :lowStockPg.pageItems.map(p=>(
+                <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:500}}>{p.name}</div>
+                    <div style={{fontSize:10,color:'var(--text3)'}}>{p.category}</div>
+                  </div>
+                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,fontWeight:700,color:'var(--yellow)'}}>{p.stock} left</span>
                 </div>
-                <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,fontWeight:700,color:'var(--yellow)'}}>{p.stock} left</span>
-              </div>
-            ))}
+              ))}
+            </div>
+            <Pagination {...lowStockPg}/>
           </div>
-          <div className="card" style={{padding:20,borderTop:'2px solid var(--red)'}}>
+          <div className="card" style={{padding:20,borderTop:'2px solid var(--red)',display:'flex',flexDirection:'column'}}>
             <div style={{fontWeight:600,fontSize:13,marginBottom:12,display:'flex',alignItems:'center',gap:6}}><Ban size={13} style={{color:'var(--red)'}}/>Out of Stock Products</div>
-            {outStock.length===0?<div style={{color:'var(--text3)',fontSize:12,textAlign:'center',padding:20}}>No out of stock products!</div>
-            :outStock.map(p=>(
-              <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
-                <div>
-                  <div style={{fontSize:12,fontWeight:500}}>{p.name}</div>
-                  <div style={{fontSize:10,color:'var(--text3)'}}>{p.category}</div>
+            <div style={{flex:1}}>
+              {outStock.length===0?<div style={{color:'var(--text3)',fontSize:12,textAlign:'center',padding:20}}>No out of stock products!</div>
+              :outStockPg.pageItems.map(p=>(
+                <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:500}}>{p.name}</div>
+                    <div style={{fontSize:10,color:'var(--text3)'}}>{p.category}</div>
+                  </div>
+                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:700,color:'var(--red)'}}>OUT</span>
                 </div>
-                <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,fontWeight:700,color:'var(--red)'}}>OUT</span>
-              </div>
-            ))}
+              ))}
+            </div>
+            <Pagination {...outStockPg}/>
           </div>
         </div>
 
@@ -462,9 +448,9 @@ export default function Dashboard() {
             <div style={{fontWeight:600,fontSize:13,marginBottom:12,display:'flex',alignItems:'center',gap:6}}><TrendingDown size={13} style={{color:'var(--red)'}}/>Least Selling Products</div>
             <div style={{display:'flex',flexDirection:'column',gap:10}}>
               {leastProds.length===0?<div style={{color:'var(--text3)',fontSize:12,textAlign:'center',padding:20}}>No sales data yet.</div>
-              :leastPageItems.map((p,i)=>(
+              :leastPg.pageItems.map((p,i)=>(
                 <div key={p.name} style={{display:'flex',alignItems:'center',gap:10}}>
-                  <span style={{fontSize:11,color:'var(--red)',fontFamily:"'JetBrains Mono',monospace",width:18}}>{(leastPage-1)*LEAST_PAGE_SIZE+i+1}</span>
+                  <span style={{fontSize:11,color:'var(--red)',fontFamily:"'JetBrains Mono',monospace",width:18}}>{leastPg.start+i}</span>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div>
                     <div style={{marginTop:3,height:3,background:'var(--bg5)',borderRadius:2,overflow:'hidden'}}><div style={{height:'100%',borderRadius:2,background:'var(--red)',width:p.sold===0?'4%':`${Math.min(100,Math.round((p.sold/(topProds[0]?.sold||1))*100))}%`}}/></div>
@@ -476,17 +462,7 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
-            {leastTotalPages>1&&(
-              <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:14,marginTop:14}}>
-                <button onClick={()=>setLeastPage(p=>Math.max(1,p-1))} disabled={leastPage===1} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:leastPage===1?0.5:1,cursor:leastPage===1?'not-allowed':'pointer'}}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-                </button>
-                <div style={{fontSize:11.5,color:'var(--text3)',fontWeight:600}}>{leastPage} of {leastTotalPages}</div>
-                <button onClick={()=>setLeastPage(p=>Math.min(leastTotalPages,p+1))} disabled={leastPage===leastTotalPages} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:leastPage===leastTotalPages?0.5:1,cursor:leastPage===leastTotalPages?'not-allowed':'pointer'}}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-                </button>
-              </div>
-            )}
+            <Pagination {...leastPg}/>
           </div>
         </div>
       </>}
@@ -684,7 +660,7 @@ export default function Dashboard() {
               <thead><tr>{['TXN #','Date & Time','Customer','Items','Payment','Total'].map(h=><th key={h}>{h}</th>)}</tr></thead>
               <tbody>
                 {repFiltered.length===0?<tr><td colSpan={6} style={{textAlign:'center',padding:40,color:'var(--text3)'}}>No transactions for this period.</td></tr>
-                :repFiltered.slice(0,10).map(tx=>(
+                :repFilteredPg.pageItems.map(tx=>(
                   <tr key={tx.id}>
                     <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--accent)'}}>#{String(tx.id).padStart(4,'0')}</td>
                     <td style={{fontSize:11,color:'var(--text3)'}}>{new Date(tx.createdAt).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
@@ -697,6 +673,7 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
+          <Pagination {...repFilteredPg}/>
         </div>
       </>}
 

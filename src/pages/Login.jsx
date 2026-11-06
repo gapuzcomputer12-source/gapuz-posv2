@@ -4,6 +4,7 @@ import { useAuthStore, useAppStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, useLoginMobile } from '../utils/helpers'
 import LoginSkeleton from '../components/LoginSkeleton'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
 const BRAND_GREEN = '#0A8F63'
 
@@ -156,6 +157,7 @@ function Mascot({ size, trackCursor, passwordFocused, peeking, shake, hop, reduc
 }
 
 export default function Login() {
+  useDocumentTitle()
   const [username, setUsername]         = useState('')
   const [password, setPassword]         = useState('')
   const [showPassword, setShowPassword] = useState(false)

@@ -4,6 +4,9 @@ import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppSt
 import { useToast } from '../utils/toast'
 import { useT, useKeyboardShortcuts, useBreakpoint, peso, stockStatus, categoryIcon, BADGE_SWATCHES } from '../utils/helpers'
 import Cart from '../components/Cart'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 function ProductCard({ product, onAdd, isLight, bodyText, catColor }) {
   const { stock, name, image, icon, price, category } = product
@@ -47,6 +50,7 @@ function ProductCard({ product, onAdd, isLight, bodyText, catColor }) {
 }
 
 export default function POS() {
+  useDocumentTitle('POS')
   const products   = useProductStore(s=>s.products)
   const loading    = useProductStore(s=>s.loading)
   const customers  = useCustomerStore(s=>s.customers)
@@ -56,6 +60,7 @@ export default function POS() {
   const { theme }    = useAppStore()
   const { items, addItem, clearCart, setCustomer } = useCartStore()
   const { holds, removeHold, saveHold } = useHoldStore()
+  const holdsPg = usePagination(holds)
   const toast = useToast()
   const t     = useT()
   const { isMobile } = useBreakpoint()
@@ -181,25 +186,28 @@ export default function POS() {
       {/* Holds Modal */}
       {showHolds&&(
         <div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.85)'}} onClick={e=>e.target===e.currentTarget&&setShowHolds(false)}>
-          <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:24,maxHeight:'70vh',overflowY:'auto'}}>
+          <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:24,maxHeight:'70vh',display:'flex',flexDirection:'column'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
               <div style={{fontWeight:700,fontSize:15,display:'flex',alignItems:'center',gap:6}}><PauseCircle size={15} style={{color:'var(--yellow)'}}/>Held Orders</div>
               <button onClick={()=>setShowHolds(false)} style={{background:'none',border:'none',color:mutedText,cursor:'pointer',fontSize:20}}>×</button>
             </div>
-            {holds.length===0
-              ? <div style={{textAlign:'center',color:mutedText,padding:32}}><PauseCircle size={30} style={{opacity:.2,marginBottom:8}}/><div>No held orders</div></div>
-              : holds.map(h=>(
-                <div key={h.id} className="card-surface" style={{padding:14,marginBottom:8,display:'flex',alignItems:'center',gap:12}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:13}}>{h.label}</div>
-                    <div style={{fontSize:11,color:mutedText,marginTop:2}}>{h.items.length} items</div>
-                    <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:'var(--accent)',marginTop:3,fontWeight:600}}>{peso(h.items.reduce((s,i)=>s+i.price*i.qty,0))}</div>
+            <div style={{flex:1,overflowY:'auto'}}>
+              {holds.length===0
+                ? <div style={{textAlign:'center',color:mutedText,padding:32}}><PauseCircle size={30} style={{opacity:.2,marginBottom:8}}/><div>No held orders</div></div>
+                : holdsPg.pageItems.map(h=>(
+                  <div key={h.id} className="card-surface" style={{padding:14,marginBottom:8,display:'flex',alignItems:'center',gap:12}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:13}}>{h.label}</div>
+                      <div style={{fontSize:11,color:mutedText,marginTop:2}}>{h.items.length} items</div>
+                      <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:'var(--accent)',marginTop:3,fontWeight:600}}>{peso(h.items.reduce((s,i)=>s+i.price*i.qty,0))}</div>
+                    </div>
+                    <button onClick={()=>restoreHold(h)} style={{padding:'6px 12px',borderRadius:8,border:'1px solid rgba(52,211,153,0.3)',background:'rgba(52,211,153,0.08)',color:'var(--accent)',cursor:'pointer',fontSize:12,fontWeight:600}}>Restore</button>
+                    <button onClick={()=>{removeHold(h.id);toast('Hold removed','info')}} style={{padding:'6px 10px',borderRadius:8,border:'1px solid rgba(239,68,68,0.3)',background:'rgba(239,68,68,0.08)',color:'var(--red)',cursor:'pointer',fontSize:12}}>×</button>
                   </div>
-                  <button onClick={()=>restoreHold(h)} style={{padding:'6px 12px',borderRadius:8,border:'1px solid rgba(52,211,153,0.3)',background:'rgba(52,211,153,0.08)',color:'var(--accent)',cursor:'pointer',fontSize:12,fontWeight:600}}>Restore</button>
-                  <button onClick={()=>{removeHold(h.id);toast('Hold removed','info')}} style={{padding:'6px 10px',borderRadius:8,border:'1px solid rgba(239,68,68,0.3)',background:'rgba(239,68,68,0.08)',color:'var(--red)',cursor:'pointer',fontSize:12}}>×</button>
-                </div>
-              ))
-            }
+                ))
+              }
+            </div>
+            <Pagination {...holdsPg}/>
           </div>
         </div>
       )}

@@ -5,6 +5,9 @@ import { useToast } from '../utils/toast'
 import { useT, peso, fmtDate } from '../utils/helpers'
 import { getTier } from '../utils/loyalty'
 import CustomerHistoryModal from '../components/CustomerHistoryModal'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 const EMPTY = { name:'', email:'', phone:'', address:'' }
 
@@ -25,14 +28,13 @@ const avatarColor = (seed) => {
 }
 
 export default function Customers() {
+  useDocumentTitle('Customers')
   const { customers, loading, addCustomer, updateCustomer, deleteCustomer } = useCustomerStore()
   const [search,   setSearch]   = useState('')
   const [modal,    setModal]    = useState(null)
   const [form,     setForm]     = useState(EMPTY)
   const [selected, setSelected] = useState(null)
   const [sortBy,   setSortBy]   = useState('name')
-  const [page,     setPage]     = useState(1)
-  const PAGE_SIZE = 6
   const toast = useToast()
   const t     = useT()
 
@@ -57,10 +59,8 @@ export default function Customers() {
     .filter(c=>!search||c.name.toLowerCase().includes(search.toLowerCase())||(c.phone||'').includes(search)||(c.email||'').toLowerCase().includes(search.toLowerCase()))
     .sort((a,b)=>{ if(sortBy==='name') return a.name.localeCompare(b.name); if(sortBy==='points') return b.points-a.points; if(sortBy==='spent') return b.totalSpent-a.totalSpent; if(sortBy==='purchases') return b.purchases-a.purchases; return 0 })
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length/PAGE_SIZE))
-  useEffect(()=>{ setPage(1) }, [search, sortBy])
-  useEffect(()=>{ if(page>totalPages) setPage(totalPages) }, [totalPages])
-  const pageItems = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE)
+  const pg = usePagination(filtered)
+  useEffect(()=>{ pg.setPage(1) }, [search, sortBy])
 
   return (
     <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:20,gap:16}}>
@@ -92,7 +92,7 @@ export default function Customers() {
                 </div>
               </td></tr>
               :filtered.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--text3)'}}>{t('no_data')}</td></tr>
-              :pageItems.map(c=>{ const tier=getTier(c.points); return (
+              :pg.pageItems.map(c=>{ const tier=getTier(c.points); return (
                 <tr key={c.id}>
                   <td><div style={{display:'flex',alignItems:'center',gap:10}}>
                     <div style={{width:32,height:32,borderRadius:8,background:avatarColor(c.id).bg,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:avatarColor(c.id).fg,flexShrink:0}}>{c.name.charAt(0).toUpperCase()}</div>
@@ -115,17 +115,7 @@ export default function Customers() {
           </table>
         </div>
       </div>
-      {totalPages>1&&(
-        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:14,flexShrink:0,paddingTop:4}}>
-          <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:page===1?0.5:1,cursor:page===1?'not-allowed':'pointer'}}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-          </button>
-          <div style={{fontSize:11.5,color:'var(--text3)',fontWeight:600}}>{page} of {totalPages}</div>
-          <button onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={page===totalPages} className="btn-secondary" style={{padding:'6px 10px',display:'flex',alignItems:'center',opacity:page===totalPages?0.5:1,cursor:page===totalPages?'not-allowed':'pointer'}}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-          </button>
-        </div>
-      )}
+      <Pagination {...pg}/>
 
       {/* Add/Edit Modal */}
       {(modal==='add'||modal==='edit')&&(

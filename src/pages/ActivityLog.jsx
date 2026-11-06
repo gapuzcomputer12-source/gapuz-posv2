@@ -2,6 +2,9 @@ import { useState } from 'react'
 import { History, Search } from 'lucide-react'
 import { useActivityLogStore } from '../store'
 import { useT, fmtDateTime } from '../utils/helpers'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 const ACTION_BADGE = {
   created:     'badge-green',
@@ -26,10 +29,9 @@ function Spinner({ size = 14, color = 'currentColor' }) {
 }
 
 export default function ActivityLog() {
+  useDocumentTitle('Activity Log')
   const { logs, loading } = useActivityLogStore()
   const [search, setSearch] = useState('')
-  const [page, setPage] = useState(1)
-  const PAGE_SIZE = 20
   const t = useT()
 
   const filtered = logs.filter(l => {
@@ -38,8 +40,7 @@ export default function ActivityLog() {
     return l.actorName?.toLowerCase().includes(q) || l.entityLabel?.toLowerCase().includes(q) || l.action?.toLowerCase().includes(q)
   })
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const pageItems = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const pg = usePagination(filtered)
 
   const detailsText = (d) => {
     if (!d) return ''
@@ -61,7 +62,7 @@ export default function ActivityLog() {
         <div style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', display: 'flex', alignItems: 'center', opacity: 0.6 }}>
           <Search size={15} />
         </div>
-        <input className="input-field" style={{ paddingLeft: 40, width: '100%' }} placeholder={t('search_logs')} value={search} onChange={e => { setSearch(e.target.value); setPage(1) }} />
+        <input className="input-field" style={{ paddingLeft: 40, width: '100%' }} placeholder={t('search_logs')} value={search} onChange={e => { setSearch(e.target.value); pg.setPage(1) }} />
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -75,8 +76,8 @@ export default function ActivityLog() {
                   {t('loading')}
                 </div>
               </td></tr>
-                : pageItems.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text3)' }}>{t('no_logs')}</td></tr>
-                  : pageItems.map(l => (
+                : pg.pageItems.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text3)' }}>{t('no_logs')}</td></tr>
+                  : pg.pageItems.map(l => (
                     <tr key={l.id}>
                       <td style={{ fontSize: 12, color: 'var(--text2)', whiteSpace: 'nowrap' }}>{fmtDateTime(l.createdAt)}</td>
                       <td style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>{l.actorName}</td>
@@ -90,17 +91,7 @@ export default function ActivityLog() {
         </div>
       </div>
 
-      {totalPages > 1 && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, flexShrink: 0, paddingTop: 4 }}>
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary" style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', opacity: page === 1 ? 0.5 : 1, cursor: page === 1 ? 'not-allowed' : 'pointer' }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
-          </button>
-          <div style={{ fontSize: 11.5, color: 'var(--text2)', fontWeight: 600 }}>{page} of {totalPages}</div>
-          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="btn-secondary" style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', opacity: page === totalPages ? 0.5 : 1, cursor: page === totalPages ? 'not-allowed' : 'pointer' }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
-          </button>
-        </div>
-      )}
+      <Pagination {...pg}/>
     </div>
   )
 }

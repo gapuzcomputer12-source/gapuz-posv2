@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { UserPlus, Pencil, X, User, Mail, Lock, Eye, EyeOff, UserX, UserCheck, AlertTriangle, Trash2, Search, ShieldAlert } from 'lucide-react'
 import { useStaffStore, useAuthStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, fmtDate } from '../utils/helpers'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/Pagination'
 
 const EMPTY = { name:'', email:'', password:'', confirmPassword:'', role:'cashier' }
 
@@ -60,6 +63,7 @@ function Spinner({ size=14, color='currentColor' }) {
 }
 
 export default function Staff() {
+  useDocumentTitle('Staff')
   const { staff, loading, addCashier, updateStaff, toggleStaffStatus, deleteStaff } = useStaffStore()
   const myId = useAuthStore(s=>s.user?.id)
   const [modal,          setModal]          = useState(null) // 'add' | 'edit' | null
@@ -83,6 +87,8 @@ export default function Staff() {
     const q = search.trim().toLowerCase()
     return !q || s.name.toLowerCase().includes(q) || (s.email||'').toLowerCase().includes(q)
   })
+  const pg = usePagination(filtered)
+  useEffect(()=>{ pg.setPage(1) }, [search])
 
   const handleSave = async () => {
     if (!form.name.trim())  return toast('Name is required', 'error')
@@ -147,7 +153,7 @@ export default function Staff() {
                 </div>
               </td></tr>
               : filtered.length===0 ? <tr><td colSpan={6} style={{textAlign:'center',padding:40,color:'var(--text3)'}}>{t('no_data')}</td></tr>
-              : filtered.map(s=>{
+              : pg.pageItems.map(s=>{
                 const ac = avatarColor(s.id)
                 const isSuspended = s.active === false
                 return (
@@ -185,6 +191,7 @@ export default function Staff() {
           </table>
         </div>
       </div>
+      <Pagination {...pg}/>
 
       {(modal==='add'||modal==='edit') && (
         <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&closeModal()}>

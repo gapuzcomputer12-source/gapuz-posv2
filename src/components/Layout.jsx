@@ -31,7 +31,9 @@ const NAV = [
 
 export default function Layout() {
   const { user, role, logout, updateProfile }           = useAuthStore()
-  const { theme, language, toggleTheme }                = useAppStore()
+  const { theme, language, toggleTheme, refundsLastSeenAt } = useAppStore()
+  const refunds = useRefundStore(s=>s.refunds)
+  const pendingUnseenRefunds = refunds.filter(r => r.status==='Pending' && (!refundsLastSeenAt || new Date(r.createdAt) > new Date(refundsLastSeenAt))).length
   const navigate  = useNavigate()
   const isLight   = theme === 'light'
   const location  = useLocation()
@@ -186,7 +188,16 @@ export default function Layout() {
                         <span style={{ fontSize: 15, width: 18, textAlign: 'center', flexShrink: 0, color: 'inherit', opacity: isActive ? 1 : 0.55, transition: 'all .2s' }}>
                           {item.icon}
                         </span>
-                        <span>{t(item.key)}</span>
+                        <span style={{ flex:1 }}>{t(item.key)}</span>
+                        {item.key==='refunds' && pendingUnseenRefunds>0 && (
+                          <span style={{
+                            minWidth:18, height:18, borderRadius:99, padding:'0 5px',
+                            background: isActive ? 'var(--accent-dark)' : 'var(--red)',
+                            color: isActive ? 'var(--accent)' : '#fff',
+                            fontSize:10.5, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center',
+                            flexShrink:0, fontFamily:"'JetBrains Mono',monospace",
+                          }}>{pendingUnseenRefunds>99?'99+':pendingUnseenRefunds}</span>
+                        )}
                       </>
                     )}
                   </NavLink>

@@ -4,6 +4,8 @@ import { useTransactionStore, useProductStore, useRefundStore } from '../store'
 import { useT, peso, fmtDate, fmtDateTime, paymentDisplay } from '../utils/helpers'
 import { TIERS, getTier, getNextTier } from '../utils/loyalty'
 import ProductThumb from './ProductThumb'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from './Pagination'
 
 const FILTERS = ['all', 'completed', 'refunded']
 
@@ -36,9 +38,24 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
     if (open) { setFilterStatus('all'); setExpanded({}); setShowTip(false) }
   }, [open, customer?.id])
 
+  const isRefunded = tx => tx.status === 'Refunded'
+  const isPartial  = tx => tx.status === 'Partially Refunded'
+  const isVoided   = tx => isRefunded(tx) || isPartial(tx)
+
+  // custTxns/filteredTxns and the pagination hook below must run on every
+  // render (Rules of Hooks), so they're computed above the early return —
+  // customer?.id keeps this safe while the modal is closed.
+  const custTxns = transactions.filter(tx => tx.customerId === customer?.id)
+  const filteredTxns = custTxns.filter(tx => {
+    if (filterStatus === 'completed') return !isVoided(tx)
+    if (filterStatus === 'refunded')  return isVoided(tx)
+    return true
+  })
+  const pg = usePagination(filteredTxns)
+  useEffect(() => { pg.setPage(1) }, [filterStatus, customer?.id])
+
   if (!open || !customer) return null
 
-  const custTxns = transactions.filter(tx => tx.customerId === customer.id)
   // Store orders newest-first, so the oldest (first) purchase is the last item.
   const firstPurchaseAt = custTxns.length ? custTxns[custTxns.length - 1].createdAt : customer.createdAt
 
@@ -54,18 +71,8 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
   const initials = (customer.name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase()).join('') || '?'
   const contactLine = [customer.email, customer.phone].filter(Boolean).join(' · ')
 
-  const isRefunded = tx => tx.status === 'Refunded'
-  const isPartial  = tx => tx.status === 'Partially Refunded'
-  const isVoided   = tx => isRefunded(tx) || isPartial(tx)
-
   const refundedAmountFor = (txnId) =>
     refunds.filter(r => r.transactionId === txnId && r.status === 'Approved').reduce((s, r) => s + r.total, 0)
-
-  const filteredTxns = custTxns.filter(tx => {
-    if (filterStatus === 'completed') return !isVoided(tx)
-    if (filterStatus === 'refunded')  return isVoided(tx)
-    return true
-  })
 
   const filterLabel = f => f === 'all' ? t('filter_all') : f === 'completed' ? t('completed') : t('filter_refunded')
 
@@ -236,7 +243,7 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
                 <Receipt size={30} style={{ opacity: .25, marginBottom: 8 }} />
                 <div style={{ fontSize: 12 }}>{t('no_purchases')}</div>
               </div>
-            ) : filteredTxns.map(tx => {
+            ) : pg.pageItems.map(tx => {
               const refunded = isRefunded(tx)
               const partial  = isPartial(tx)
               const voided   = refunded || partial
@@ -314,6 +321,7 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
                 </div>
               )
             })}
+            <Pagination {...pg}/>
           </div>
         </div>
       </div>
