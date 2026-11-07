@@ -16,29 +16,44 @@ const inRange = (date, from, to) => isWithinInterval(date, { start: from, end: t
 
 // Pure — no store/React imports — so Dashboard.jsx and Reports.jsx always
 // compute gross/net the same way from the same records.
+// Per-unit profit is (selling price − cost price) × qty — item.price is
+// already VAT-exclusive (see useCartStore.getTotals), so no VAT stripping
+// needed here. Missing costPrice (e.g. a product deleted since the sale,
+// or a pre-migration row never backfilled) reads as 0 cost rather than
+// throwing, same fallback the rest of the app uses for costPrice.
+const lineProfit = (item) => (item.price - (item.costPrice || 0)) * (item.qty || 1)
+
 export function computeSalesMetrics({ transactions = [], refunds = [], returns = [], from, to }) {
   const txnsInRange = transactions.filter(tx => inRange(new Date(tx.createdAt), from, to))
   const grossSales = txnsInRange.reduce((s, tx) => s + (tx.total || 0), 0)
   const grossVat    = txnsInRange.reduce((s, tx) => s + (tx.vat || 0), 0)
   const transactionCount = txnsInRange.length
+  const grossProfit = txnsInRange.reduce((s, tx) => s + (tx.items || []).reduce((a, i) => a + lineProfit(i), 0), 0)
 
   const approvedRefunds = refunds.filter(r => r.status === 'Approved' && inRange(approvedDate(r), from, to))
   const refundTotal = approvedRefunds.reduce((s, r) => s + (r.total || 0), 0)
   const refundCount = approvedRefunds.length
+  // Refund items carry `refundQty` (a partial qty of the original line)
+  // instead of `qty` — see Refunds.jsx.
+  const refundedProfit = approvedRefunds.reduce((s, r) => s + (r.items || []).reduce((a, i) => a + lineProfit({ ...i, qty: i.refundQty ?? i.qty }), 0), 0)
 
   const approvedReturns = returns.filter(r => r.status === 'Approved' && isMoneyBack(r.method) && inRange(approvedDate(r), from, to))
   const returnTotal = approvedReturns.reduce((s, r) => s + (r.total || 0), 0)
   const returnCount = approvedReturns.length
+  // Returned items carry `returnQty` (a partial qty of the original line)
+  // instead of `qty` — see Returns.jsx.
+  const returnedProfit = approvedReturns.reduce((s, r) => s + (r.items || []).reduce((a, i) => a + lineProfit({ ...i, qty: i.returnQty ?? i.qty }), 0), 0)
 
   const deducted    = refundTotal + returnTotal
   const netSales     = grossSales - deducted
+  const netProfit    = grossProfit - refundedProfit - returnedProfit
   // Refund/return totals are VAT-inclusive (subtotal * 1.12), so the VAT
   // portion of the deducted amount is amount − amount / 1.12.
   const refundedVat = deducted - deducted / 1.12
   const netVat        = grossVat - refundedVat
   const refundRate   = grossSales > 0 ? (deducted / grossSales) * 100 : 0
 
-  return { grossSales, refundTotal, refundCount, returnTotal, returnCount, netSales, grossVat, refundedVat, netVat, refundRate, transactionCount }
+  return { grossSales, refundTotal, refundCount, returnTotal, returnCount, netSales, grossVat, refundedVat, netVat, refundRate, transactionCount, grossProfit, netProfit }
 }
 
 // Day-by-day gross/net/refunds series for the last `days` days (inclusive of

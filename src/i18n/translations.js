@@ -93,6 +93,8 @@ export const translations = {
   net_sales:        'Net Sales',
   gross_vat:        'Gross VAT',
   net_vat:          'Net VAT',
+  gross_profit:     'Gross Profit',
+  net_profit:       'Net Profit',
   refund_rate:      'Refund rate',
   no_refunds_today: 'No refunds today',
   sales_breakdown:  'Sales Breakdown',

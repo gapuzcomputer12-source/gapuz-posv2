@@ -438,7 +438,7 @@ export const useTransactionStore = create((set, get) => ({
     set({ loading: true })
     const { data, error } = await supabase
       .from('transactions')
-      .select(`${TXN_SELECT}, items:transaction_items(id:product_id, name, price, qty)`)
+      .select(`${TXN_SELECT}, items:transaction_items(id:product_id, name, price, qty, costPrice:cost_price)`)
       .order('created_at', { ascending: false })
     if (!error) set({ transactions: data, loading: false })
     else set({ loading: false })
@@ -459,7 +459,7 @@ export const useTransactionStore = create((set, get) => ({
     }
     const { data: inserted, error } = await supabase.from('transactions').insert(row).select(TXN_SELECT).single()
     if (error || !inserted) return null
-    const itemRows = txn.items.map(i => ({ transaction_id: inserted.id, product_id: i.id, name: i.name, qty: i.qty, price: i.price }))
+    const itemRows = txn.items.map(i => ({ transaction_id: inserted.id, product_id: i.id, name: i.name, qty: i.qty, price: i.price, cost_price: i.costPrice || 0 }))
     await supabase.from('transaction_items').insert(itemRows)
     const full = { ...inserted, items: txn.items }
     set(s => ({ transactions: [full, ...s.transactions] }))

@@ -6,8 +6,12 @@ import {
 } from 'lucide-react'
 import { translations } from '../i18n/translations'
 
-export const peso = (n) => '₱' + Number(n||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})
-export const pesoCompact = (n) => { if(n>=1000000) return '₱'+(n/1000000).toFixed(1)+'M'; if(n>=1000) return '₱'+(n/1000).toFixed(1)+'K'; return '₱'+(n||0).toLocaleString() }
+// Negative amounts always render as "−₱1,234.00" (minus before the peso
+// sign), not toLocaleString's default "₱-1,234.00" — keeps sign placement
+// consistent with the "−" manually prefixed in a few callsites (e.g. the
+// Refunds stat card) that pass an already-positive amount.
+export const peso = (n) => { const v = Number(n||0); return (v<0?'−':'') + '₱' + Math.abs(v).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}) }
+export const pesoCompact = (n) => { const v = Number(n||0); const sign = v<0?'−':''; const a = Math.abs(v); if(a>=1000000) return sign+'₱'+(a/1000000).toFixed(1)+'M'; if(a>=1000) return sign+'₱'+(a/1000).toFixed(1)+'K'; return sign+'₱'+a.toLocaleString() }
 export const fmtDate = (d) => new Date(d).toLocaleDateString('en-PH',{month:'short',day:'numeric',year:'numeric'})
 export const fmtDateTime = (d) => new Date(d).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
 export const fmtTxnId = (id) => '#'+String(id).padStart(4,'0')

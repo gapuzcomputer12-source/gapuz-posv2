@@ -588,6 +588,8 @@ export default function Dashboard() {
 
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:14}}>
           <StatCard label={t('net_sales')}  value={peso(repMetrics.netSales)}        color="var(--accent)"/>
+          <StatCard label={t('gross_profit')} value={peso(repMetrics.grossProfit)}   color={repMetrics.grossProfit>=0?"var(--green)":"var(--red)"}/>
+          <StatCard label={t('net_profit')} value={peso(repMetrics.netProfit)}       color={repMetrics.netProfit>=0?"var(--green)":"var(--red)"}/>
           <StatCard label={t('transactions')} value={repMetrics.transactionCount}    color="var(--green)"/>
           <StatCard label={t('net_vat')}    value={peso(repMetrics.netVat)}          color="var(--purple)"/>
           <StatCard label={t('avg_order')}  value={peso(repAvg)}                     color="var(--yellow)"/>

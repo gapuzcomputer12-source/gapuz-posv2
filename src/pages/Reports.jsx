@@ -49,6 +49,19 @@ function StatCard({label,value,color,sub}){
   )
 }
 
+// Same look as StatCard, but every instance reserves the same subtitle
+// height and shares one grid (.kpi-grid in index.css) so the 8 Sales-tab
+// cards always land 4+4 / 2+2+2+2 / stacked — never a 7+1 orphan row.
+function KpiCard({label,value,color,sub}){
+  return(
+    <div className="card kpi-card" style={{padding:16,borderTop:`2px solid ${color}`}}>
+      <div style={{fontSize:9.5,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>{label}</div>
+      <div className="kpi-card-value" style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,color}}>{value}</div>
+      <div className="kpi-card-sub" style={{fontSize:10,color:'var(--text3)',marginTop:3}}>{sub}</div>
+    </div>
+  )
+}
+
 export default function Reports(){
   const transactions = useTransactionStore(s=>s.transactions)
   const products     = useProductStore(s=>s.products)
@@ -175,6 +188,8 @@ export default function Reports(){
       row('Refunds', money(metrics.refundTotal)),
       row('Returns', money(metrics.returnTotal)),
       row('Net Sales', money(metrics.netSales)),
+      row('Gross Profit', money(metrics.grossProfit)),
+      row('Net Profit', money(metrics.netProfit)),
       row('Gross VAT', money(metrics.grossVat)),
       row('Refunded VAT', money(metrics.refundedVat)),
       row('Net VAT', money(metrics.netVat)),
@@ -260,15 +275,17 @@ export default function Reports(){
 
       {/* ══════════ SALES REPORT ══════════ */}
       {activeTab==='sales' && <>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:12}}>
-          <StatCard label="Gross Sales"     value={peso(metrics.grossSales)}                   color="var(--accent)"/>
-          <StatCard label="Refunds"         value={`−${peso(metrics.refundTotal+metrics.returnTotal)}`} color="var(--red)"/>
-          <StatCard label="Net Sales"       value={peso(metrics.netSales)}                      color="var(--accent)"/>
-          <StatCard label="Net VAT"         value={peso(metrics.netVat)}                        color="var(--purple)"/>
-          <StatCard label="Transactions"    value={metrics.transactionCount}                    color="var(--green)"/>
-          <StatCard label="Average Order"   value={peso(salesAvg)}                              color="var(--yellow)" sub="Net-based"/>
+        <div className="kpi-grid">
+          <KpiCard label="Gross Sales"     value={peso(metrics.grossSales)}                   color="var(--accent)"/>
+          <KpiCard label="Refunds"         value={`−${peso(metrics.refundTotal+metrics.returnTotal)}`} color="var(--red)"/>
+          <KpiCard label="Net Sales"       value={peso(metrics.netSales)}                      color="var(--accent)"/>
+          <KpiCard label="Net VAT"         value={peso(metrics.netVat)}                        color="var(--purple)"/>
+          <KpiCard label="Gross Profit"    value={peso(metrics.grossProfit)}                   color={metrics.grossProfit>=0?"var(--green)":"var(--red)"}/>
+          <KpiCard label="Net Profit"      value={peso(metrics.netProfit)}                     color={metrics.netProfit>=0?"var(--green)":"var(--red)"}/>
+          <KpiCard label="Transactions"    value={metrics.transactionCount}                    color="var(--green)"/>
+          <KpiCard label="Average Order"   value={peso(salesAvg)}                              color="var(--yellow)" sub="Net-based"/>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(340px,1fr))',gap:14}}>
+        <div className="kpi-bottom-grid">
           <div className="card" style={{padding:20}}>
             <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Revenue Chart — Gross vs Net</div>
             <ResponsiveContainer width="100%" height={180}>
