@@ -12,7 +12,11 @@ export default function ProductThumb({ image, icon, category, size = 28, radius 
   const content = image || icon
 
   if (content && (content.startsWith('data:') || content.startsWith('http'))) {
-    return <img src={content} alt="" style={{ width: size, height: size, borderRadius: radius, objectFit: 'cover', border: '1px solid var(--border2)', flexShrink: 0 }} />
+    return (
+      <div style={{ width: size, height: size, borderRadius: radius, overflow: 'hidden', border: '1px solid var(--border2)', flexShrink: 0 }}>
+        <img src={content} alt="" style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }} />
+      </div>
+    )
   }
   if (content) {
     return (

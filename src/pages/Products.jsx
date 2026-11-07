@@ -203,7 +203,9 @@ export default function Products() {
                 return(<tr key={p.id}>
                   <td style={{width:56}}>
                     {p.image && (p.image.startsWith('data:') || p.image.startsWith('http')) ? (
-                      <img src={p.image} style={{width:44,height:44,borderRadius:8,objectFit:'cover',border:'1px solid var(--border2)'}} alt=""/>
+                      <div style={{width:44,height:44,borderRadius:8,overflow:'hidden',border:'1px solid var(--border2)',flexShrink:0}}>
+                        <img src={p.image} style={{display:'block',width:'100%',height:'100%',objectFit:'cover'}} alt=""/>
+                      </div>
                     ) : p.image || p.icon ? (
                       <div style={{width:44,height:44,borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,color:mutedText}}>{p.image || p.icon}</div>
                     ) : (() => {
