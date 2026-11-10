@@ -215,7 +215,7 @@ export default function Dashboard() {
       {activeTab==='overview' && <>
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:14}}>
           <RevenueCard label={t('today_revenue')} isAdmin={isAdmin} revenueView={effectiveView} setRevenueView={setRevenueView}
-            value={revenueValue} grossSales={todayMetrics.grossSales} deducted={todayMetrics.refundTotal+todayMetrics.returnTotal} revChange={revChange}/>
+            value={revenueValue} grossSales={todayMetrics.grossSales} deducted={todayMetrics.refundTotal} revChange={revChange}/>
           <MetricCard label={t('transactions')} value={todayTxns.length} sub="Today" subUp color="var(--green)"/>
           <MetricCard label={t('items_sold')} value={itemsSold} sub="Today" subUp color="var(--purple)"/>
           {isAdmin && <MetricCard label={t('avg_order')} value={pesoCompact(aov)} sub="Today · net" subUp color="var(--yellow)"/>}

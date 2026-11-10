@@ -272,7 +272,7 @@ export default function Reports(){
       {activeTab==='sales' && <>
         <div className="kpi-grid">
           <KpiCard label="Gross Sales"     value={peso(metrics.grossSales)}                   color="var(--accent)"/>
-          <KpiCard label="Refunds"         value={`−${peso(metrics.refundTotal+metrics.returnTotal)}`} color="var(--red)"/>
+          <KpiCard label="Refunds"         value={`−${peso(metrics.refundTotal)}`} color="var(--red)"/>
           <KpiCard label="Net Sales"       value={peso(metrics.netSales)}                      color="var(--accent)"/>
           <KpiCard label="Net VAT"         value={peso(metrics.netVat)}                        color="var(--purple)"/>
           <KpiCard label="Gross Profit"    value={peso(metrics.grossProfit)}                   color={metrics.grossProfit>=0?"var(--green)":"var(--red)"}/>
