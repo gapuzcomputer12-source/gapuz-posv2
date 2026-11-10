@@ -2,6 +2,13 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { supabase } from '../lib/supabaseClient'
 
+// Password-reset emails must always point at the stable production URL, not
+// window.location.origin — if "Forgot password" is ever clicked from a
+// Vercel preview deployment, that origin is ephemeral and the emailed link
+// 404s with DEPLOYMENT_NOT_FOUND once the preview is replaced or cleaned up.
+// localhost is kept as-is so local dev testing still redirects locally.
+const SITE_URL = window.location.hostname === 'localhost' ? window.location.origin : 'https://gapuz-pos.vercel.app'
+
 // ── AUTH STORE (Supabase Auth + profiles table) ───────────────────
 export const useAuthStore = create((set, get) => ({
   user: null,
@@ -44,7 +51,7 @@ export const useAuthStore = create((set, get) => ({
 
   requestPasswordReset: async (email) => {
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: `${SITE_URL}/reset-password`,
     })
     return { error }
   },

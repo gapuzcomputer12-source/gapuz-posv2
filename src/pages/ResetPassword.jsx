@@ -1,11 +1,27 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Check, X } from 'lucide-react'
+import { Check, X, Eye, EyeOff } from 'lucide-react'
 import { useAuthStore } from '../store'
 import { useToast } from '../utils/toast'
 import { supabase } from '../lib/supabaseClient'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { PASSWORD_RULES, isPasswordStrong } from '../utils/helpers'
+
+function PasswordInput({ value, onChange, placeholder, onEnter }) {
+  const [show, setShow] = useState(false)
+  return (
+    <div style={{ position:'relative' }}>
+      <input className="input-field" type={show?'text':'password'} value={value}
+             onChange={onChange} placeholder={placeholder}
+             style={{ paddingRight:36 }}
+             onKeyDown={e=>e.key==='Enter'&&onEnter?.()}/>
+      <button type="button" onClick={()=>setShow(v=>!v)} aria-label={show?'Hide password':'Show password'}
+              style={{ position:'absolute', right:4, top:'50%', transform:'translateY(-50%)', width:28, height:28, border:'none', background:'transparent', color:'var(--text3)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>
+        {show ? <EyeOff size={15}/> : <Eye size={15}/>}
+      </button>
+    </div>
+  )
+}
 
 function PasswordChecklist({ password }) {
   return (
@@ -106,18 +122,14 @@ export default function ResetPassword() {
           <div style={{ display:'flex', flexDirection:'column', gap:16, marginBottom:24 }}>
             <div>
               <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text3)', marginBottom:7, textTransform:'uppercase', letterSpacing:'.6px' }}>New Password</label>
-              <input className="input-field" type="password" value={password}
-                     onChange={e=>setPassword(e.target.value)}
-                     placeholder="Create a strong password"
-                     onKeyDown={e=>e.key==='Enter'&&handleSubmit()}/>
+              <PasswordInput value={password} onChange={e=>setPassword(e.target.value)}
+                     placeholder="Create a strong password" onEnter={handleSubmit}/>
               <PasswordChecklist password={password}/>
             </div>
             <div>
               <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text3)', marginBottom:7, textTransform:'uppercase', letterSpacing:'.6px' }}>Confirm Password</label>
-              <input className="input-field" type="password" value={confirmPassword}
-                     onChange={e=>setConfirmPassword(e.target.value)}
-                     placeholder="Re-enter password"
-                     onKeyDown={e=>e.key==='Enter'&&handleSubmit()}/>
+              <PasswordInput value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)}
+                     placeholder="Re-enter password" onEnter={handleSubmit}/>
             </div>
           </div>
 
