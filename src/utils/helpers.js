@@ -16,6 +16,23 @@ export const fmtDate = (d) => new Date(d).toLocaleDateString('en-PH',{month:'sho
 export const fmtDateTime = (d) => new Date(d).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
 export const fmtTxnId = (id) => '#'+String(id).padStart(4,'0')
 
+// Shared password policy — used by ResetPassword, the Layout profile modal,
+// and Staff add/edit, so every place an account password gets set enforces
+// the same rule instead of some screens staying on the old 6-char minimum.
+export const PASSWORD_RULES = [
+  { key: 'length',  label: 'At least 8 characters',        test: p => p.length >= 8 },
+  { key: 'upper',   label: 'One uppercase letter (A-Z)',    test: p => /[A-Z]/.test(p) },
+  { key: 'lower',   label: 'One lowercase letter (a-z)',    test: p => /[a-z]/.test(p) },
+  { key: 'number',  label: 'One number (0-9)',              test: p => /[0-9]/.test(p) },
+  { key: 'special', label: 'One special character (!@#$…)', test: p => /[^A-Za-z0-9]/.test(p) },
+]
+export const isPasswordStrong = (p) => PASSWORD_RULES.every(r => r.test(p || ''))
+// First failing rule, phrased for a toast — or null if the password passes everything.
+export const passwordError = (p) => {
+  const r = PASSWORD_RULES.find(r => !r.test(p || ''))
+  return r ? `Password needs ${r.label.toLowerCase()}` : null
+}
+
 // A sale's `payment` column is free text — "Cash", "GCash", "Card", or a
 // "Cash+GCash"-style combo for a split payment (see schema.sql). Shared by
 // anywhere a transaction's payment method shows as an icon+label chip

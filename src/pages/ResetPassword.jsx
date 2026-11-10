@@ -1,9 +1,27 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Check, X } from 'lucide-react'
 import { useAuthStore } from '../store'
 import { useToast } from '../utils/toast'
 import { supabase } from '../lib/supabaseClient'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { PASSWORD_RULES, isPasswordStrong } from '../utils/helpers'
+
+function PasswordChecklist({ password }) {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4, marginTop:8 }}>
+      {PASSWORD_RULES.map(rule => {
+        const ok = rule.test(password)
+        return (
+          <div key={rule.key} style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color: ok ? 'var(--green)' : 'var(--text3)' }}>
+            {ok ? <Check size={12}/> : <X size={12}/>}
+            {rule.label}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 // Module-scoped so the verification survives React StrictMode's dev-only double
 // effect invocation (mount → cleanup → remount) — without this, the second
@@ -52,7 +70,7 @@ export default function ResetPassword() {
 
   const handleSubmit = async () => {
     if (!password || !confirmPassword) return toast('Please fill in both fields', 'error')
-    if (password.length < 6) return toast('Password must be at least 6 characters', 'error')
+    if (!isPasswordStrong(password)) return toast('Password does not meet the requirements below', 'error')
     if (password !== confirmPassword) return toast('Passwords do not match', 'error')
     setLoading(true)
     const { error } = await updatePassword(password)
@@ -90,8 +108,9 @@ export default function ResetPassword() {
               <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text3)', marginBottom:7, textTransform:'uppercase', letterSpacing:'.6px' }}>New Password</label>
               <input className="input-field" type="password" value={password}
                      onChange={e=>setPassword(e.target.value)}
-                     placeholder="At least 6 characters"
+                     placeholder="Create a strong password"
                      onKeyDown={e=>e.key==='Enter'&&handleSubmit()}/>
+              <PasswordChecklist password={password}/>
             </div>
             <div>
               <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text3)', marginBottom:7, textTransform:'uppercase', letterSpacing:'.6px' }}>Confirm Password</label>
@@ -102,7 +121,7 @@ export default function ResetPassword() {
             </div>
           </div>
 
-          <button onClick={handleSubmit} disabled={loading} className="btn-primary" style={{ width:'100%', padding:13, fontSize:14 }}>
+          <button onClick={handleSubmit} disabled={loading || !isPasswordStrong(password)} className="btn-primary" style={{ width:'100%', padding:13, fontSize:14, opacity:(loading||!isPasswordStrong(password))?.6:1 }}>
             {loading ? 'Updating...' : 'Update Password'}
           </button>
         </>}

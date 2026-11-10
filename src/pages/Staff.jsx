@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { UserPlus, Pencil, X, User, Mail, Lock, Eye, EyeOff, UserX, UserCheck, AlertTriangle, Trash2, Search, ShieldAlert } from 'lucide-react'
 import { useStaffStore, useAuthStore } from '../store'
 import { useToast } from '../utils/toast'
-import { useT, fmtDate } from '../utils/helpers'
+import { useT, fmtDate, passwordError } from '../utils/helpers'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
@@ -93,8 +93,11 @@ export default function Staff() {
   const handleSave = async () => {
     if (!form.name.trim())  return toast('Name is required', 'error')
     if (!form.email.trim()) return toast('Email is required', 'error')
-    if (isAdd && (!form.password || form.password.length < 6)) return toast('Password must be at least 6 characters', 'error')
-    if (!isAdd && form.password && form.password.length < 6)   return toast('Password must be at least 6 characters', 'error')
+    if (isAdd && !form.password) return toast('Password is required', 'error')
+    if (form.password) {
+      const pwErr = passwordError(form.password)
+      if (pwErr) return toast(pwErr, 'error')
+    }
     if (form.password !== form.confirmPassword) return toast('Passwords do not match', 'error')
 
     setSaving(true)
@@ -249,7 +252,8 @@ export default function Staff() {
                 <div>
                   <label style={FIELD_LABEL}>{isAdd ? `${t('password')} *` : t('new_password_optional')}</label>
                   <PasswordField value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))}
-                                 placeholder={isAdd ? 'At least 6 characters' : t('leave_blank_pw')} onEnter={handleSave}/>
+                                 placeholder={isAdd ? 'Create a strong password' : t('leave_blank_pw')} onEnter={handleSave}/>
+                  {form.password && <div style={{fontSize:10,color:'var(--text3)',marginTop:5}}>Min 8 characters, with uppercase, lowercase, a number, and a special character.</div>}
                 </div>
                 <div>
                   <label style={FIELD_LABEL}>{t('confirm_password')}{isAdd ? ' *' : ''}</label>

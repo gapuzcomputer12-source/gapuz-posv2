@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Pencil } from 'lucide-react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore, useAppStore, useProductStore, useCustomerStore, useTransactionStore, useRefundStore, useHoldStore, useCategoryStore, useStaffStore, useActivityLogStore } from '../store'
-import { useT, useBreakpoint } from '../utils/helpers'
+import { useT, useBreakpoint, passwordError } from '../utils/helpers'
 import { useToast } from '../utils/toast'
 
 const SidebarIcon = ({ children }) => (
@@ -77,7 +77,8 @@ export default function Layout() {
     if (currentPassword || password || confirmPassword) {
       if (!currentPassword) return toast('Please enter your current password', 'error')
       if (!password) return toast('Please enter a new password', 'error')
-      if (password.length < 6) return toast('New password must be at least 6 characters', 'error')
+      const pwErr = passwordError(password)
+      if (pwErr) return toast(pwErr, 'error')
       if (password !== confirmPassword) return toast('New passwords do not match', 'error')
     }
     setProfileSaving(true)
@@ -335,6 +336,7 @@ export default function Layout() {
               <div>
                 <label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('new_password')}</label>
                 <input className="input-field" type="password" value={profileForm.password} onChange={e=>setProfileForm(f=>({...f,password:e.target.value}))} placeholder="••••••••"/>
+                {profileForm.password && <div style={{fontSize:10,color:'var(--text3)',marginTop:5}}>Min 8 characters, with uppercase, lowercase, a number, and a special character.</div>}
               </div>
               <div>
                 <label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('confirm_new_password')}</label>
