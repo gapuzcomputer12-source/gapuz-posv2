@@ -26,7 +26,7 @@ This lists every feature/module in the system and what it does.
 - Automatic change calculation for cash; blocks checkout if cash given is insufficient
 - Walk-in or registered-customer checkout (registered customers earn loyalty points)
 - Printable receipt and optional email receipt to the customer
-- Stock deducted atomically on checkout (`deduct_stock` RPC) so two cashiers can't oversell the same item; low-stock email alert fires to all admins the moment stock genuinely decreases to 1, 2, 3 ("Low Stock") or 0 ("Out of Stock") — see §11
+- Stock deducted atomically on checkout (`deduct_stock` RPC) so two cashiers can't oversell the same item; low-stock email alert fires to all admins the moment stock genuinely decreases to 1, 2, 3 ("Low Stock") or 0 ("Out of Stock") — see §10
 
 ## 3. Inventory / Products (`Products.jsx`) — Admin only
 - Add / edit / delete products (name, category, selling price, cost price, stock, barcode, image or icon)
@@ -56,35 +56,25 @@ This lists every feature/module in the system and what it does.
 - Admin approval enforced both in the UI and by database row-level security
 - Refund History table is paginated (8 per page)
 - Sidebar "Refunds" nav item shows a live red badge counting pending requests submitted since the page was last viewed — clears the moment the page is opened (per-device, not synced across admin logins)
-- Browser tab title reflects role and workload: cashiers see "Returns & Refunds", admins see "Refund Approval" — or `(N) Refund Approval` when N requests are pending
+- Browser tab title reflects role and workload: cashiers see "Refunds", admins see "Refund Approval" — or `(N) Refund Approval` when N requests are pending
 
-## 6. Returns (`Returns.jsx`)
-- Guided 4-step wizard: look up the original transaction → select items/quantities → enter return details (reason, method, notes) → confirm & submit
-- Return methods: Cash, GCash, Store Credit, or **Exchange** (merchandise swap, no money given back)
-- Submitted as **Pending**; must be **Approved or Rejected by an Admin**
-- Approving a return restocks the returned items — the status flip and every item's restock happen as one atomic database call (`approve_return` RPC), so a dropped connection or double-click can't leave it partially processed
-- Rejecting a return leaves stock untouched
-- Displays as `RTN-0001`-style IDs; every submit/approve/reject is written to the Activity Log
-- Admin approval enforced both in the UI and by database row-level security
-- Return History table is paginated (8 per page)
-
-## 7. Reports (`Reports.jsx`) — Admin only
+## 6. Reports (`Reports.jsx`) — Admin only
 Report tabs, each filterable by period (Today / This Week / This Month / This Year):
-- **Sales** — gross sales, net sales (after approved refunds/returns), net VAT, transaction count, average order value, gross-vs-net revenue chart, payment-method breakdown, top/least selling products, full transaction table (paginated), Sales Breakdown card (gross → deductions → net, with refund-rate indicator)
+- **Sales** — gross sales, net sales (after approved refunds), net VAT, transaction count, average order value, gross-vs-net revenue chart, payment-method breakdown, top/least selling products, full transaction table (paginated), Sales Breakdown card (gross → deductions → net, with refund-rate indicator)
 - **Stock Monitoring** (formerly "Inventory") — total products, inventory value, low-stock & out-of-stock counts, old stock (added 90+ days ago, unsold 90+ days, paginated), new stock (added within 30 days, paginated), low stock list (paginated, aligned side-by-side with New Stock), category breakdown
 - **Loss** — products selling below cost price (paginated), estimated total loss, low-margin products <15% margin (paginated), loss-from-transactions table (paginated)
 - **Customer** — loyalty tier distribution, top spenders, tier criteria reference
-- **Refund** — refund/return volume and status breakdown, policy summary, history table (paginated)
-- CSV export of the sales report — RFC 4180-escaped fields (safe against commas/quotes in names), consistent 2-decimal money formatting, UTF-8 BOM so it opens cleanly in Excel without garbled characters; includes a gross/net/VAT/refund-rate summary and a list of approved refunds/returns for the period
+- **Refund** — refund volume and status breakdown, policy summary, history table (paginated)
+- CSV export of the sales report — RFC 4180-escaped fields (safe against commas/quotes in names), consistent 2-decimal money formatting, UTF-8 BOM so it opens cleanly in Excel without garbled characters; includes a gross/net/VAT/refund-rate summary and a list of approved refunds for the period
 
-## 8. Dashboard (`Dashboard.jsx`)
+## 7. Dashboard (`Dashboard.jsx`)
 - **Overview tab** (everyone) — today's revenue (Net for cashiers; Net/Gross toggle for admins), transactions, items sold, average order value, 7/14-day gross-vs-net revenue trend chart, weekly sales, top products, least-selling products (paginated), low-stock/out-of-stock alert cards, recent transactions table (paginated)
 - **Inventory tab** (everyone) — product/category breakdown, low-stock and out-of-stock lists (paginated, aligned side-by-side), top/least selling products (least-selling paginated)
 - **Customers tab** (admin only) — loyalty tier breakdown, top customers by spending
 - **Refunds tab** (admin only) — refund status breakdown, recent refund requests
 - **Reports tab** (admin only) — period-filtered net sales/VAT/transactions/AOV, revenue chart, Sales Breakdown card, top/least selling products this period, transaction history table (paginated)
 
-## 9. Staff Management (`Staff.jsx`) — Admin only
+## 8. Staff Management (`Staff.jsx`) — Admin only
 - Add new cashier accounts (name, email, password)
 - Edit staff (name, email, password, role)
 - Suspend / reactivate accounts (blocks login at the Supabase Auth level, not just an app flag)
@@ -92,11 +82,11 @@ Report tabs, each filterable by period (Today / This Week / This Month / This Ye
 - Safeguards: an admin can't delete or demote themselves (or anyone) into leaving zero admins — the last remaining admin can never be deleted or demoted
 - Staff table is paginated (8 per page)
 
-## 10. Activity Log (`ActivityLog.jsx`) — Admin only
-- Searchable, paginated audit trail (8 per page) of every tracked action: staff created/updated/suspended/reactivated/deleted; products created/updated/deleted/restocked; categories created/updated/deleted; customers deleted; refunds and returns submitted/approved/rejected
+## 9. Activity Log (`ActivityLog.jsx`) — Admin only
+- Searchable, paginated audit trail (8 per page) of every tracked action: staff created/updated/suspended/reactivated/deleted; products created/updated/deleted/restocked; categories created/updated/deleted; customers deleted; refunds submitted/approved/rejected
 - Entries cannot be edited or deleted once written (enforced at the database level — no UPDATE/DELETE policy on the table)
 
-## 11. Low-Stock Email Alerts
+## 10. Low-Stock Email Alerts
 - Emails every active admin when a product's stock genuinely decreases (not on every poll) and lands at:
   - **1, 2, or 3 units** → "Low Stock" email, shows the real remaining count
   - **0 units** → "Out of Stock" email
@@ -104,21 +94,20 @@ Report tabs, each filterable by period (Today / This Week / This Month / This Ye
 - Fires from both checkout deduction and manual stock edits in Products.jsx
 - Sent via a Supabase Edge Function (`send-low-stock-alert`) over Brevo SMTP
 
-## 12. Browser Tab Titles & Favicon
+## 11. Browser Tab Titles & Favicon
 - Every page sets a distinct document title with the page name first (e.g. "POS · Gapuz POS", "Inventory · Gapuz POS") so Chrome's tab truncation never hides which page a tab is on
 - Login screen keeps the full brand title
 - 32×32 and 180×180 (Apple touch icon) favicons generated from the existing "G" logo, plus a theme-color meta tag
 
-## 13. Pagination
+## 12. Pagination
 - Every table and list across both dashboards shows at most **8 rows per page**, with Back/Next controls and a "Showing X–Y of Z" counter
 - Pagination follows search/filter/sort — changing any of them resets the table back to page 1
 - Row numbers (where shown) continue correctly across pages
 - Side-by-side card pairs (Low Stock / Out of Stock, Low Stock / New Stock) stay visually aligned — the pagination bar pins to the bottom of each card even when one list is shorter than the other
 - Short, fixed-size lists (Top Products, Top Customers, cart contents, dropdowns) are intentionally left unpaginated
 
-## 14. Other
+## 13. Other
 - Light/dark theme toggle (persisted locally per device)
-- Responsive layout — adapts between desktop and mobile/tablet breakpoints
 
 ---
 
@@ -131,6 +120,5 @@ Report tabs, each filterable by period (Today / This Week / This Month / This Ye
 - "New stock" flag: added within the last 30 days
 - "Low margin" flag: profit margin ≤15% of selling price
 - Refund window: 15 days from purchase; refund method must match original payment method
-- Refunds/returns require admin approval before stock is restored and customer stats are reversed
-- A return only reduces reported sales when money/credit actually goes back (Cash, GCash, Store Credit) — an Exchange does not
+- Refunds require admin approval before stock is restored and customer stats are reversed
 - Table/list pagination: 8 rows per page everywhere, client-side only

@@ -7,7 +7,6 @@ export const translations = {
   customers:  'Customers',
   refunds:    'Refunds',
   logout:     'Logout',
-  returns:    'Returns',
   staff_accounts: 'Staff Accounts',
 
   // Profile menu

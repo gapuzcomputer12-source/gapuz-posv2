@@ -66,7 +66,7 @@ export default function Refunds() {
 
   // Admin reviews/approves requests here, so the tab shows how many are
   // waiting — cashiers just see the page they submit requests from.
-  useDocumentTitle(isAdmin ? (pendingCount > 0 ? `(${pendingCount}) Refund Approval` : 'Refund Approval') : 'Returns & Refunds')
+  useDocumentTitle(isAdmin ? (pendingCount > 0 ? `(${pendingCount}) Refund Approval` : 'Refund Approval') : 'Refunds')
 
   // ── Filtered refunds table ────────────────────────────────
   const filteredRefunds = useMemo(() =>

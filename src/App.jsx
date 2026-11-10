@@ -13,7 +13,6 @@ import Products  from './pages/Products'
 import Reports   from './pages/Reports'
 import Customers from './pages/Customers'
 import Refunds   from './pages/Refunds'
-import Returns   from './pages/Returns'
 import Staff     from './pages/Staff'
 import ActivityLog from './pages/ActivityLog'
 
@@ -51,7 +50,6 @@ export default function App() {
             <Route path="reports"   element={<Guard adminOnly><Reports/></Guard>}/>
             <Route path="customers" element={<Customers/>}/>
             <Route path="refunds"   element={<Refunds/>}/>
-            <Route path="returns"   element={<Returns/>}/>
             <Route path="staff"     element={<Guard adminOnly><Staff/></Guard>}/>
             <Route path="activity-log" element={<Guard adminOnly><ActivityLog/></Guard>}/>
           </Route>

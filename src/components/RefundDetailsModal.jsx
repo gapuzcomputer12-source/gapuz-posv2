@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useReactToPrint } from 'react-to-print'
-import { FileText, Printer, Package, Banknote, Smartphone, Tag, AlertTriangle, Repeat } from 'lucide-react'
+import { FileText, Printer, Package, Banknote, Smartphone, Tag, AlertTriangle } from 'lucide-react'
 import { useAppStore, useTransactionStore, useProductStore, useCustomerStore, useCategoryStore, useActivityLogStore, useRefundStore } from '../store'
-import { useReturnStore } from '../store/useReturnStore'
 import ProductThumb from './ProductThumb'
 import { peso, fmtDate, fmtDateTime } from '../utils/helpers'
 
 const REFUND_WINDOW_DAYS = 15
-export const METHOD_ICON = { Cash: Banknote, GCash: Smartphone, 'Store Credit': Tag, Card: Banknote, Exchange: Repeat }
+export const METHOD_ICON = { Cash: Banknote, GCash: Smartphone, 'Store Credit': Tag, Card: Banknote }
 
 export const StatusBadge = ({ status, isLight }) => {
   const styles = isLight ? {
@@ -39,12 +38,7 @@ const MetaCard = ({ label, children }) => (
   </div>
 )
 
-// Shared by Refunds.jsx and Returns.jsx — `type` picks which record shape to read
-// (field names differ slightly between the two tables: transactionId vs txnId,
-// refundMethod vs method) and which sibling store to search for "other requests
-// on this transaction".
-export default function RefundDetailsModal({ open, onClose, record, type, isAdmin, onApprove, onReject }) {
-  const isReturn = type === 'return'
+export default function RefundDetailsModal({ open, onClose, record, isAdmin, onApprove, onReject }) {
   const { theme } = useAppStore()
   const isLight = theme === 'light'
   const { transactions } = useTransactionStore()
@@ -53,7 +47,6 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
   const { categories } = useCategoryStore()
   const { logs } = useActivityLogStore()
   const { refunds } = useRefundStore()
-  const { returns } = useReturnStore()
   const [processing, setProcessing] = useState('')
   const printRef = useRef(null)
   const handlePrint = useReactToPrint({ content: () => printRef.current })
@@ -69,11 +62,11 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
 
   if (!open || !record) return null
 
-  const idLabel   = isReturn ? `RTN-${String(record.id).padStart(4, '0')}` : `#${String(record.id).padStart(4, '0')}`
-  const title     = isReturn ? `Return ${idLabel}` : `Refund ${idLabel}`
-  const txnId     = isReturn ? record.txnId : record.transactionId
-  const method    = isReturn ? record.method : record.refundMethod
-  const entityType = isReturn ? 'return' : 'refund'
+  const idLabel   = `#${String(record.id).padStart(4, '0')}`
+  const title     = `Refund ${idLabel}`
+  const txnId     = record.transactionId
+  const method    = record.refundMethod
+  const entityType = 'refund'
   const entityLabel = `#${String(record.id).padStart(4, '0')}`
 
   const txn = transactions.find(t => t.id === txnId)
@@ -83,10 +76,7 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
 
   const decisionLog = logs.find(l => l.entityType === entityType && l.entityLabel === entityLabel && (l.action === 'approved' || l.action === 'rejected'))
 
-  const siblings = (isReturn ? returns : refunds).filter(x => {
-    const xTxnId = isReturn ? x.txnId : x.transactionId
-    return xTxnId === txnId && x.id !== record.id
-  })
+  const siblings = refunds.filter(x => x.transactionId === txnId && x.id !== record.id)
 
   const items = record.items || []
   const hasBreakdown = (record.subtotal || 0) > 0 || (record.vat || 0) > 0
@@ -152,7 +142,7 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
                 </div>
               )}
             </MetaCard>
-            <MetaCard label={isReturn ? 'Return Method' : 'Refund Method'}>
+            <MetaCard label="Refund Method">
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><MethodIcon size={12} />{method}</span>
               {txn?.payment && <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 500, marginTop: 2 }}>Originally paid via {txn.payment}</div>}
             </MetaCard>
@@ -185,7 +175,7 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {items.map(item => {
-                const qtyRequested = item.refundQty ?? item.returnQty ?? item.qty ?? 1
+                const qtyRequested = item.refundQty ?? item.qty ?? 1
                 const qtyOriginal = item.qty ?? qtyRequested
                 const product = products.find(p => p.id === item.id)
                 const catObj = categories.find(c => c.name === product?.category)
@@ -241,7 +231,7 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
                 {siblings.map(s => (
                   <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 10px', background: 'var(--bg3)', borderRadius: 7, fontSize: 11 }}>
                     <span style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--text2)' }}>
-                      {isReturn ? `RTN-${String(s.id).padStart(4, '0')}` : `#${String(s.id).padStart(4, '0')}`}
+                      #{String(s.id).padStart(4, '0')}
                     </span>
                     <StatusBadge status={s.status} isLight={isLight} />
                   </div>
@@ -276,7 +266,7 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
         <div id="receipt-printable" ref={printRef} style={{ background: '#fff', color: '#000', fontFamily: "'Courier New',monospace", fontSize: 11, padding: 20, width: 300, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', paddingBottom: 10, borderBottom: '1px dashed #ccc', marginBottom: 10 }}>
             <div style={{ fontSize: 15, fontWeight: 700 }}>GAPUZ COMPUTER SERVICES</div>
-            <div style={{ fontSize: 10, color: '#555' }}>{isReturn ? 'Return' : 'Refund'} Slip — {idLabel}</div>
+            <div style={{ fontSize: 10, color: '#555' }}>Refund Slip — {idLabel}</div>
           </div>
           <div style={{ fontSize: 10, color: '#555', marginBottom: 8 }}>
             TXN #{String(txnId).padStart(4, '0')} · {fmtDateTime(record.createdAt)}<br />
@@ -285,7 +275,7 @@ export default function RefundDetailsModal({ open, onClose, record, type, isAdmi
           </div>
           <div style={{ borderTop: '1px dashed #ccc', borderBottom: '1px dashed #ccc', padding: '8px 0', marginBottom: 8 }}>
             {items.map((item, i) => {
-              const qty = item.refundQty ?? item.returnQty ?? item.qty ?? 1
+              const qty = item.refundQty ?? item.qty ?? 1
               return (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 2 }}>
                   <span style={{ flex: 1 }}>{item.name}</span><span style={{ margin: '0 8px' }}>x{qty}</span><span>{peso(item.price * qty)}</span>
