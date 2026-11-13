@@ -125,9 +125,8 @@ The Dashboard has its own internal tabs. Even though `/dashboard` is open to cas
 - Keyboard shortcuts (`/` to focus search, `Esc` to clear)
 - Shopping cart with quantity controls, per-item stock caps
 - **Hold orders** — park a cart under a label and restore it later (useful for multiple customers being served at once)
-- Discounts — percentage or fixed peso amount
-- Automatic **12% VAT** calculation
-- Payment methods: Cash, GCash, Card, or **Split Payment** (two methods in one transaction)
+- Automatic **12% VAT** calculation (total = subtotal + 12% VAT; the discount feature was removed)
+- Payment methods: Cash, GCash, or **Split Payment** (two methods in one transaction) — Card was removed as a selectable method; old Card-paid sales remain in history/reports unchanged
 - Cash payments calculate change due automatically; blocks checkout if cash given is insufficient
 - Walk-in or registered-customer checkout (registered customers earn loyalty points)
 - Printable receipt (via react-to-print) and optional **email receipt** to the customer
@@ -152,7 +151,7 @@ The Dashboard has its own internal tabs. Even though `/dashboard` is open to cas
 A guided 4-step wizard:
 1. Look up the original transaction by its transaction number
 2. Select which items (and quantities) are being refunded
-3. Enter refund details — reason, refund method (must match the original payment method: Cash→Cash, GCash→GCash, Card→Card), and notes
+3. Enter refund details — reason, refund method (Cash or GCash), and notes
 4. Confirm & submit
 
 Refunds start as **Pending** and must be **Approved or Rejected by an Admin**. Approving a refund restocks the returned items and reverses the customer's loyalty points/purchase stats; every decision is written to the Activity Log. Policy: 15-day return window, original transaction ID required.
@@ -207,7 +206,7 @@ Server-side functions that use the Supabase service-role key (never exposed to t
 
 ## 7. Key Business Rules
 
-- VAT: 12%, applied after discount
+- VAT: 12% of subtotal (no discount feature)
 - Loyalty points: 10 pts/transaction + 1 pt per ₱100 spent
 - Loyalty tiers: Bronze (0–499) / Silver (500–1,499) / Gold (1,500–2,999) / Platinum (3,000+)
 - "Low stock" threshold: 1–5 units remaining

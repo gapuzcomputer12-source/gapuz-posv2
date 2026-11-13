@@ -53,7 +53,6 @@ function receiptHtml(txn: any) {
       </table>
       <div style="font-size:12px;margin-top:10px">
         <div style="display:flex;justify-content:space-between;color:#555;padding:2px 0"><span>Subtotal</span><span>${peso(txn.subtotal)}</span></div>
-        ${txn.discAmt > 0 ? `<div style="display:flex;justify-content:space-between;color:#dc2626;padding:2px 0"><span>Discount</span><span>-${peso(txn.discAmt)}</span></div>` : ''}
         <div style="display:flex;justify-content:space-between;color:#555;padding:2px 0"><span>VAT (12%)</span><span>${peso(txn.vat)}</span></div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:17px;background:#ecfdf5;border-radius:8px;padding:10px 12px;margin-top:10px">

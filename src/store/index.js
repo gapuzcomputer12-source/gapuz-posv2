@@ -525,7 +525,10 @@ export const useTransactionStore = create((set, get) => ({
       customer_name: txn.customerName || 'Walk-in',
       payment: txn.payment,
       subtotal: txn.subtotal,
-      disc_amt: txn.discAmt,
+      // Discount feature removed — every new sale saves 0. The column
+      // itself stays (default 0) so old discounted sales still show their
+      // real disc_amt and compute correctly.
+      disc_amt: 0,
       vat: txn.vat,
       total: txn.total,
       cash_given: txn.cashGiven,
@@ -804,7 +807,6 @@ export const useHoldStore = create((set, get) => ({
 // ── CART STORE (local session state — not persisted server-side) ──
 export const useCartStore = create((set, get) => ({
   items: [],
-  discount: { value:0, type:'pct' },
   payMethod: 'Cash',
   customerId: null,
   splitMode: false,
@@ -861,8 +863,7 @@ export const useCartStore = create((set, get) => ({
       return { items: s.items.map(i => i.id===id ? {...i, qty:serials.length, serials} : i) }
     })
   },
-  clearCart: () => set({ items:[], discount:{value:0,type:'pct'}, customerId:null, splitMode:false, split1Amt:'' }),
-  setDiscount: (value, type) => set({ discount:{value,type} }),
+  clearCart: () => set({ items:[], customerId:null, splitMode:false, split1Amt:'' }),
   setPayMethod: (m) => set({ payMethod:m }),
   setCustomer: (id) => set({ customerId:id }),
   setSplitMode: (v) => set({ splitMode:v }),
@@ -870,13 +871,12 @@ export const useCartStore = create((set, get) => ({
   setSplit2Pay: (v) => set({ split2Pay:v }),
   setSplit1Amt: (v) => set({ split1Amt:v }),
 
+  // Discount feature removed — total is always subtotal + 12% VAT.
   getTotals: () => {
-    const { items, discount } = get()
+    const { items } = get()
     const subtotal = items.reduce((s,i)=>s+i.price*i.qty,0)
-    const discAmt  = discount.type==='pct' ? subtotal*(discount.value/100) : Math.min(discount.value||0,subtotal)
-    const afterDisc = subtotal - discAmt
-    const vat       = afterDisc * 0.12
-    const total     = afterDisc + vat
-    return { subtotal, discAmt, vat, total, totalInt: Math.round(total) }
+    const vat       = subtotal * 0.12
+    const total     = subtotal + vat
+    return { subtotal, vat, total, totalInt: Math.round(total) }
   },
 }))

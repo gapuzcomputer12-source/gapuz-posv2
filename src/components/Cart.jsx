@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import { useReactToPrint } from 'react-to-print'
-import { Banknote, Smartphone, CreditCard, Zap, ShoppingCart, Package, AlertTriangle, Mail, Printer, Check, PauseCircle, X, Wrench } from 'lucide-react'
+import { Banknote, Smartphone, Zap, ShoppingCart, Package, AlertTriangle, Mail, Printer, Check, PauseCircle, X, Wrench } from 'lucide-react'
 import { useCartStore, useAuthStore, useTransactionStore, useProductStore, useCustomerStore } from '../store'
 import { supabase } from '../lib/supabaseClient'
 import { peso, fmtTxnId, useT, useBreakpoint } from '../utils/helpers'
@@ -9,11 +9,11 @@ import Receipt from './Receipt'
 import ProductThumb from './ProductThumb'
 import Modal from './Modal'
 
-const PAY = [{id:'Cash',label:'Cash',icon:Banknote},{id:'GCash',label:'GCash',icon:Smartphone},{id:'Card',label:'Card',icon:CreditCard}]
+const PAY = [{id:'Cash',label:'Cash',icon:Banknote},{id:'GCash',label:'GCash',icon:Smartphone}]
 
 export default function Cart({ products, customers, onHold }) {
-  const { items, discount, payMethod, customerId, splitMode, split1Pay, split2Pay, split1Amt,
-          removeItem, removeSerialFromItem, setQty, setItemNote, clearCart, setDiscount, setPayMethod, setCustomer,
+  const { items, payMethod, customerId, splitMode, split1Pay, split2Pay, split1Amt,
+          removeItem, removeSerialFromItem, setQty, setItemNote, clearCart, setPayMethod, setCustomer,
           setSplitMode, setSplit1Pay, setSplit2Pay, setSplit1Amt, getTotals } = useCartStore()
   const { user, role } = useAuthStore()
   const addTransaction = useTransactionStore(s=>s.addTransaction)
@@ -34,7 +34,7 @@ export default function Cart({ products, customers, onHold }) {
   const receiptRef = useRef()
   const handlePrint = useReactToPrint({content:()=>receiptRef.current})
 
-  const { subtotal, discAmt, vat, total, totalInt } = getTotals()
+  const { subtotal, vat, total, totalInt } = getTotals()
   const change = cashGiven ? parseFloat(cashGiven)-totalInt : 0
   const totalItems = items.reduce((s,i)=>s+i.qty,0)
   const cust = customers.find(c=>c.id===customerId)
@@ -66,7 +66,7 @@ export default function Cart({ products, customers, onHold }) {
         customerName: cust?cust.name:'Walk-in',
         customerId:   customerId||null,
         payment:      payDesc,
-        subtotal, discAmt, vat, total:totalInt,
+        subtotal, vat, total:totalInt,
         cashGiven:    payMethod==='Cash'?parseFloat(cashGiven):0,
         status:       'Completed',
         cashierName:  user?.user_metadata?.name||'Cashier',
@@ -231,19 +231,9 @@ export default function Cart({ products, customers, onHold }) {
 
       {/* Totals & payment */}
       <div style={{padding:'10px 14px 14px',borderTop:border,flexShrink:0,display:'flex',flexDirection:'column',gap:8}}>
-        {/* Discount */}
-        <div style={{display:'flex',gap:6}}>
-          <input type="number" min="0" className="input-field" style={{fontSize:12,padding:'7px 10px'}} placeholder={t('discount')} value={discount.value||''} onChange={e=>setDiscount(parseFloat(e.target.value)||0,discount.type)}/>
-          <select className="select-field" style={{width:64,fontSize:12,padding:'7px 8px'}} value={discount.type} onChange={e=>setDiscount(discount.value,e.target.value)}>
-            <option value="pct">%</option>
-            <option value="fixed">₱</option>
-          </select>
-        </div>
-
         {/* Summary */}
         <div style={{fontSize:12,display:'flex',flexDirection:'column',gap:4}}>
           <div style={{display:'flex',justifyContent:'space-between',color:'var(--text2)'}}><span>{t('subtotal')}</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(subtotal)}</span></div>
-          {discAmt>0&&<div style={{display:'flex',justifyContent:'space-between',color:'var(--red)'}}><span>{t('discount')}</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>-{peso(discAmt)}</span></div>}
           <div style={{display:'flex',justifyContent:'space-between',color:'var(--text2)'}}><span>{t('vat')}</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(vat)}</span></div>
           <div style={{display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:16,borderTop:'1px solid var(--border)',paddingTop:7,marginTop:3}}>
             <span>{t('total')}</span>
@@ -276,7 +266,6 @@ export default function Cart({ products, customers, onHold }) {
                   <div style={{border,borderRadius:10,overflow:'hidden'}}>
                     <div style={{padding:'10px 12px',background:'var(--bg3)',fontSize:12.5,display:'flex',flexDirection:'column',gap:4}}>
                       <div style={{display:'flex',justifyContent:'space-between',color:'var(--text2)'}}><span>{totalItems} item{totalItems===1?'':'s'}</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(subtotal)}</span></div>
-                      {discAmt>0&&<div style={{display:'flex',justifyContent:'space-between',color:'var(--red)'}}><span>{t('discount')}</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>-{peso(discAmt)}</span></div>}
                       <div style={{display:'flex',justifyContent:'space-between',color:'var(--text2)'}}><span>{t('vat')}</span><span style={{fontFamily:"'JetBrains Mono',monospace"}}>{peso(vat)}</span></div>
                       <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,fontSize:16,borderTop:'1px solid var(--border2)',paddingTop:7,marginTop:3}}>
                         <span>{t('total')}</span><span style={{fontFamily:"'JetBrains Mono',monospace",color:'var(--accent)'}}>{peso(totalInt)}</span>
@@ -308,11 +297,11 @@ export default function Cart({ products, customers, onHold }) {
                     <div className="section-title" style={{marginBottom:8}}>Split Between</div>
                     <div style={{display:'flex',flexDirection:'column',gap:8}}>
                       <div style={{display:'flex',gap:8}}>
-                        <select className="select-field" style={{width:110,fontSize:12.5}} value={split1Pay} onChange={e=>setSplit1Pay(e.target.value)}>{['Cash','GCash','Card'].map(m=><option key={m}>{m}</option>)}</select>
+                        <select className="select-field" style={{width:110,fontSize:12.5}} value={split1Pay} onChange={e=>setSplit1Pay(e.target.value)}>{['Cash','GCash'].map(m=><option key={m}>{m}</option>)}</select>
                         <input type="number" className="input-field" style={{fontFamily:"'JetBrains Mono',monospace"}} placeholder="Amount (₱)" value={split1Amt} onChange={e=>setSplit1Amt(e.target.value)}/>
                       </div>
                       <div style={{display:'flex',gap:8}}>
-                        <select className="select-field" style={{width:110,fontSize:12.5}} value={split2Pay} onChange={e=>setSplit2Pay(e.target.value)}>{['GCash','Cash','Card'].map(m=><option key={m}>{m}</option>)}</select>
+                        <select className="select-field" style={{width:110,fontSize:12.5}} value={split2Pay} onChange={e=>setSplit2Pay(e.target.value)}>{['GCash','Cash'].map(m=><option key={m}>{m}</option>)}</select>
                         <div className="input-field" style={{fontFamily:"'JetBrains Mono',monospace",color:'var(--text2)',display:'flex',alignItems:'center'}}>{peso(Math.max(0,totalInt-(parseFloat(split1Amt)||0)))}</div>
                       </div>
                     </div>
@@ -331,17 +320,11 @@ export default function Cart({ products, customers, onHold }) {
                     </div>
                     {cashGiven&&change<0&&<div style={{marginTop:8,fontSize:11.5,color:'var(--red)',fontWeight:600,display:'flex',alignItems:'center',gap:5}}><AlertTriangle size={13}/>Cash received is less than the total amount.</div>}
                   </div>
-                ) : payMethod==='GCash' ? (
+                ) : (
                   <div style={{textAlign:'center',background:'var(--bg3)',border,borderRadius:10,padding:'20px 16px'}}>
                     <Smartphone size={28} style={{marginBottom:8,color:'var(--text2)'}}/>
                     <div style={{fontWeight:700,fontSize:13.5,color:'var(--text)',marginBottom:4}}>Confirm GCash Payment</div>
                     <div style={{fontSize:12,color:'var(--text3)'}}>Verify the customer's GCash payment of <strong style={{color:'var(--text2)'}}>{peso(totalInt)}</strong> before completing.</div>
-                  </div>
-                ) : (
-                  <div style={{textAlign:'center',background:'var(--bg3)',border,borderRadius:10,padding:'20px 16px'}}>
-                    <CreditCard size={28} style={{marginBottom:8,color:'var(--text2)'}}/>
-                    <div style={{fontWeight:700,fontSize:13.5,color:'var(--text)',marginBottom:4}}>Confirm Card Payment</div>
-                    <div style={{fontSize:12,color:'var(--text3)'}}>Verify the card payment of <strong style={{color:'var(--text2)'}}>{peso(totalInt)}</strong> before completing.</div>
                   </div>
                 )}
               </div>

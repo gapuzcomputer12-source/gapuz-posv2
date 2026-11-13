@@ -20,9 +20,8 @@ This lists every feature/module in the system and what it does.
 - Keyboard shortcuts (`/` to focus search, `Esc` to clear)
 - Shopping cart with quantity controls and per-item stock caps
 - **Hold orders** — park a cart under a label and restore it later; Held Orders list is paginated (8 per page)
-- Discounts — percentage or fixed peso amount
-- Automatic **12% VAT** calculation
-- Payment methods: Cash, GCash, Card, or **Split Payment** (two methods in one sale)
+- Automatic **12% VAT** calculation (total = subtotal + 12% VAT; the discount feature was removed)
+- Payment methods: Cash, GCash, or **Split Payment** (two methods in one sale) — Card was removed as a selectable method; old Card-paid sales remain in history/reports unchanged
 - Automatic change calculation for cash; blocks checkout if cash given is insufficient
 - Walk-in or registered-customer checkout (registered customers earn loyalty points)
 - Printable receipt and optional email receipt to the customer
@@ -47,7 +46,7 @@ This lists every feature/module in the system and what it does.
 
 ## 5. Refunds (`Refunds.jsx`)
 - Guided 4-step wizard: look up the original transaction → select items/quantities → enter refund details (reason, refund method, notes) → confirm & submit
-- Refund method must match the original payment method (Cash→Cash, GCash→GCash, Card→Card)
+- Refund method: Cash or GCash
 - Submitted as **Pending**; must be **Approved or Rejected by an Admin**
 - Approving a refund restocks the returned items and reverses the customer's loyalty points/purchase stats
 - Rejecting a refund leaves stock and loyalty stats untouched
@@ -112,7 +111,7 @@ Report tabs, each filterable by period (Today / This Week / This Month / This Ye
 ---
 
 ## Key Business Rules
-- VAT: 12%, applied after discount
+- VAT: 12% of subtotal (no discount feature)
 - Loyalty points: 10 pts/transaction + 1 pt per ₱100 spent
 - Loyalty tiers: Bronze (0–499) / Silver (500–1,499) / Gold (1,500–2,999) / Platinum (3,000+)
 - "Low stock" threshold: 1–3 units remaining (UI badges and email alerts both use this threshold)

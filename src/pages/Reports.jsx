@@ -396,7 +396,6 @@ export default function Reports(){
       {header:'Items',value:r=>(r.items||[]).map(i=>`${i.name} ×${i.qty}`).join(', ')},
       {header:'Payment',value:r=>r.payment},
       {header:'Subtotal',value:r=>r.subtotal||r.total,money:true,total:true},
-      {header:'Discount',value:r=>r.discAmt||0,money:true,total:true},
       {header:'VAT',value:r=>r.vat||0,money:true,total:true},
       {header:'Total',value:r=>r.total,money:true,total:true},
       {header:'Status',value:r=>txnStatus(r,refunds,returns)},

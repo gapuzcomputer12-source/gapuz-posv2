@@ -224,7 +224,7 @@ export default function Refunds() {
 
   const POLICY_ITEMS = [
     { icon: '🕒', title: `${SALE_ADJUSTMENT_DAYS}-Day Refund Window`, desc: `Refunds can only be requested within ${SALE_ADJUSTMENT_DAYS} days of the original purchase date.` },
-    { icon: '🧾', title: 'Valid Reasons',           desc: 'Only for services not done or cancelled, and cashier mistakes like wrong quantity charged. To return an item, use Returns.' },
+    { icon: '🧾', title: 'Valid Reasons',           desc: 'Only for services not done or cancelled, or a wrong quantity charged by the cashier. To return an item, use Returns.' },
     { icon: '📄', title: 'Proof of Purchase',       desc: 'The original transaction receipt or ID must be provided for verification.' },
     { icon: '🛡️', title: 'Administrator Review',   desc: 'Each request is evaluated by the Admin for eligibility before approval.' },
     { icon: '💰', title: 'Refund Amount',           desc: 'Never more than what was actually paid on the transaction.' },

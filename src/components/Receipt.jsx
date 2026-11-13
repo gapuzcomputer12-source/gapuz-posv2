@@ -34,7 +34,6 @@ const Receipt = forwardRef(function Receipt({ txn, role }, ref) {
       </div>
       <div style={{fontSize:10,marginBottom:8}}>
         <div style={{display:'flex',justifyContent:'space-between',color:'#555'}}><span>Subtotal</span><span>{peso(txn.subtotal)}</span></div>
-        {txn.discAmt>0&&<div style={{display:'flex',justifyContent:'space-between',color:'#555'}}><span>Discount</span><span>-{peso(txn.discAmt)}</span></div>}
         <div style={{display:'flex',justifyContent:'space-between',color:'#555'}}><span>VAT (12%)</span><span>{peso(txn.vat)}</span></div>
         <div style={{display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:13,borderTop:'1px solid #ccc',paddingTop:4,marginTop:4}}><span>TOTAL</span><span>{peso(txn.total)}</span></div>
         {txn.payment==='Cash'&&txn.cashGiven>0&&<>
