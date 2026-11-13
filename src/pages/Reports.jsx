@@ -702,31 +702,33 @@ export default function Reports(){
             <StatCard icon={Ban} label="Out of Stock" value={outStock.length} tone="red"/>
           </div>
 
-          <ChartCard title={<><Star size={14} style={{color:'var(--rpt-amber)'}}/>Product Demand &amp; Restock Recommendations</>}
-            subtitle="Suggested reorder covers 14 days of sales based on the last 30 days.">
-            <div className="rpt-demand-grid">
-              <div>
-                <div style={{fontSize:13,fontWeight:600,color:'var(--rpt-title)',marginBottom:12}}>Top 10 by units sold (30d)</div>
+          <div className="rpt-demand-row">
+            <div className="rpt-top-sellers-col">
+              <ChartCard title={<><Star size={14} style={{color:'var(--rpt-amber)'}}/>Top Sellers (30d)</>}>
                 <RankedList
-                  items={top10ByUnits.map(p=>({key:p.id,label:p.name,value:p.sold30}))}
+                  items={top10ByUnits.slice(0,8).map(p=>({key:p.id,label:p.name,value:p.sold30,_p:p}))}
+                  renderLeft={it=><ProductThumb image={it._p.image} icon={it._p.icon} category={it._p.category} size={24} radius={6}/>}
                   renderValue={it=>`${it.value} sold`}
                   emptyText="No sales in the last 30 days."
                 />
-              </div>
-              <div>
+              </ChartCard>
+            </div>
+            <div>
+              <ChartCard title={<><Star size={14} style={{color:'var(--rpt-amber)'}}/>Restock Recommendations</>}
+                subtitle="Suggested reorder covers 14 days of sales based on the last 30 days.">
                 <div style={{marginBottom:12}}>
                   <SegmentedControl size="sm"
                     options={['All','Reorder now','Reorder soon','OK','No demand'].map(s=>({value:s,label:<>{s}<span className="rpt-filter-chip">{demandStatusCounts[s]}</span></>}))}
                     value={demandStatusFilter} onChange={setDemandStatusFilter}/>
                 </div>
                 <div className="rpt-table-wrap"><div className="rpt-table-scroll">
-                  <table className="rpt-table">
+                  <table className="rpt-table rpt-table-fixed8">
                     <thead><tr>
                       <th>Product</th><th>Category</th><th className="num">Stock</th><th className="num">Sold (30d)</th>
                       <th className="num">Avg/day</th><th className="num">Days left</th><th className="num">Suggested reorder</th><th>Status</th>
                     </tr></thead>
                     <tbody>
-                      {demandFiltered.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:30,color:'var(--rpt-muted)'}}>No products match this filter.</td></tr>
+                      {demandFiltered.length===0?<tr style={{height:416}}><td colSpan={8} style={{textAlign:'center',verticalAlign:'middle',color:'var(--rpt-muted)'}}>No products in this status</td></tr>
                       :demandPg.pageItems.map(p=>(
                         <tr key={p.id}>
                           <td><div style={{display:'flex',alignItems:'center',gap:8}}><ProductThumb image={p.image} icon={p.icon} category={p.category} size={22} radius={5}/>{p.name}</div></td>
@@ -743,9 +745,9 @@ export default function Reports(){
                   </table>
                 </div></div>
                 <Pagination {...demandPg}/>
-              </div>
+              </ChartCard>
             </div>
-          </ChartCard>
+          </div>
 
           <div className="rpt-grid-12">
             <div className="rpt-col-6">
@@ -802,7 +804,7 @@ export default function Reports(){
                       <div className="rpt-simple-sub">{p.stock} in stock · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div>
                     </div>
                   </div>
-                  <div style={{fontSize:13,fontWeight:700,color:'var(--rpt-red)',flexShrink:0}}>{peso(p.tiedUp)} tied up</div>
+                  <div style={{fontSize:13,fontWeight:700,color:'var(--rpt-red)',flexShrink:0}}>{peso(p.tiedUp)} stock value</div>
                 </div>
               ))}
             </div>
