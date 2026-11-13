@@ -46,6 +46,23 @@
   .card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;}
   .card-surface{background:var(--bg3);border:1px solid var(--border);border-radius:6px;}
 
+  /* Policy modal (Refund/Return policy popups) — clamps the panel to the
+     viewport so the footer button can never get pushed off-screen on short
+     screens; dvh accounts for mobile browser chrome, with a plain vh
+     fallback (ignored by browsers that understand dvh, read by those that
+     don't — same property declared twice in one rule, standard fallback). */
+  .policy-modal-panel{max-height:100vh;max-height:calc(100dvh - 2rem);}
+  .policy-modal-header{padding:20px 24px 16px;}
+  .policy-modal-header-icon{font-size:36px;margin-bottom:10px;}
+  .policy-modal-rules{padding:16px 20px;gap:10px;}
+  .policy-modal-rule-icon{width:34px;height:34px;font-size:18px;}
+  @media (max-height:800px){
+    .policy-modal-header{padding:12px 24px 10px;}
+    .policy-modal-header-icon{font-size:24px;margin-bottom:6px;}
+    .policy-modal-rules{gap:6px;padding:12px 20px;}
+    .policy-modal-rule-icon{width:28px;height:28px;font-size:15px;}
+  }
+
   /* KPI stat-card grid (Reports > Sales) — explicit column breakpoints
      instead of auto-fit, so 8 cards never split into a 7+1 orphan row. */
   .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
@@ -100,12 +117,37 @@
   .tbl-wrap tbody tr:hover td{background:var(--bg3);}
   .refund-row{transition:background .1s;}
   .refund-row:hover td{background:var(--bg3);}
+  .sale-lookup-row{transition:background .15s,border-color .15s;}
+  .sale-lookup-row:hover:not(:disabled){background:var(--accent-tint);border-color:rgba(52,211,153,0.3);}
+  .sale-lookup-row-arrow{opacity:0;transform:translateX(-3px);transition:opacity .15s,transform .15s;}
+  .sale-lookup-row:hover:not(:disabled) .sale-lookup-row-arrow{opacity:1;transform:translateX(0);}
   .page-title{font-size:20px;font-weight:700;color:var(--text);letter-spacing:-.3px;}
   .section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text2);margin-bottom:12px;}
-  .page-header{@apply flex items-center justify-between mb-5 flex-shrink-0;flex-wrap:wrap;gap:12px;}
+  .page-header{@apply flex items-center justify-between mb-3 flex-shrink-0;flex-wrap:wrap;gap:12px;}
   .tab-btn{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;padding:9px 18px;font-size:12px;font-weight:600;border:none;cursor:pointer;background:transparent;color:var(--text3);border-bottom:2px solid transparent;border-radius:6px 6px 0 0;transition:all .15s;font-family:inherit;}
   .tab-btn:hover{background:var(--accent-tint);color:var(--accent);}
   .tab-btn.active{color:var(--accent);border-bottom:2px solid var(--accent);background:transparent;}
+
+  /* Refunds/Returns form fields (Reason select, Amount input, Notes
+     textarea) — a lighter "card surface" look instead of the app-wide
+     .input-field/.select-field gray fill, with a visible green focus
+     ring. Scoped to its own class instead of changing .input-field so the
+     rest of the app (POS, Products, etc.) is untouched. */
+  .form-field{height:44px;padding:0 12px;font-size:14px;border-radius:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--text);outline:none;width:100%;font-family:'Plus Jakarta Sans',system-ui,sans-serif;transition:border-color .15s,box-shadow .15s;}
+  .form-field:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint);}
+  .form-field::placeholder{color:var(--text3);}
+  .form-field-textarea{height:auto;min-height:44px;padding:10px 12px;resize:none;}
+
+  /* Returns/Refunds two-panel layout (sticky form + history table) —
+     shared so both pages stack identically below 1200px and the sticky
+     behavior turns off cleanly when stacked (a sticky panel sitting above
+     a long table would just look broken). */
+  .dual-panel-grid{display:flex;gap:16px;align-items:flex-start;}
+  .dual-panel-grid>.form-panel{position:sticky;top:0;}
+  @media (max-width:1200px){
+    .dual-panel-grid{flex-direction:column;}
+    .dual-panel-grid>.form-panel{position:static;max-width:none!important;width:100%;}
+  }
 }
 
 @keyframes fadeUp{from{opacity:0}to{opacity:1}}

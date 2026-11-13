@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { ComposedChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import { startOfDay, endOfDay, subDays, startOfMonth, startOfYear } from 'date-fns'
 import { Trophy, TrendingDown, AlertTriangle, Ban, CheckCircle2, Package, Wallet, Award, Star, RefreshCw, ClipboardList, Hand } from 'lucide-react'
-import { useTransactionStore, useProductStore, useAuthStore, useCustomerStore, useRefundStore, useAppStore } from '../store'
+import { useTransactionStore, useProductStore, useAuthStore, useCustomerStore, useRefundStore, useReturnStore, useAppStore } from '../store'
 import { useT, peso, pesoCompact, getTier } from '../utils/helpers'
 import { computeSalesMetrics, getDailySeries } from '../utils/salesMetrics'
 import { CHART_COLORS, ACCENT, RED, YELLOW, PURPLE, SLATE } from '../utils/colors'
@@ -88,6 +88,7 @@ export default function Dashboard() {
   const products     = useProductStore(s=>s.products)
   const customers    = useCustomerStore(s=>s.customers)
   const refunds      = useRefundStore(s=>s.refunds)
+  const returns      = useReturnStore(s=>s.returns)
   const { user, role } = useAuthStore()
   const { revenueView, setRevenueView, theme } = useAppStore()
   const isAdmin      = role === 'admin'
@@ -103,9 +104,9 @@ export default function Dashboard() {
   // ── TODAY METRICS ─────────────────────────────────────────
   const todayTxns = useMemo(()=>transactions.filter(tx=>{ const d=new Date(tx.createdAt); d.setHours(0,0,0,0); return d.getTime()===today.getTime() }),[transactions])
   const itemsSold = todayTxns.reduce((s,t)=>s+(t.items||[]).reduce((a,i)=>a+i.qty,0),0)
-  const todayMetrics = useMemo(()=>computeSalesMetrics({ transactions, refunds, from: today, to: now }),[transactions,refunds,today,now])
+  const todayMetrics = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: today, to: now }),[transactions,refunds,returns,today,now])
   const yest      = subDays(today,1)
-  const yestMetrics = useMemo(()=>computeSalesMetrics({ transactions, refunds, from: yest, to: endOfDay(yest) }),[transactions,refunds,yest])
+  const yestMetrics = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: yest, to: endOfDay(yest) }),[transactions,refunds,returns,yest])
   const effectiveView = isAdmin ? revenueView : 'net'
   const revenueValue = effectiveView==='gross' ? todayMetrics.grossSales : todayMetrics.netSales
   const yesterdayValue = effectiveView==='gross' ? yestMetrics.grossSales : yestMetrics.netSales
@@ -114,7 +115,7 @@ export default function Dashboard() {
 
   // ── CHARTS ────────────────────────────────────────────────
   const weekData  = useMemo(()=>{ const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return Array.from({length:7},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-(6-i)); d.setHours(0,0,0,0); const dt=transactions.filter(tx=>{ const td=new Date(tx.createdAt); td.setHours(0,0,0,0); return td.getTime()===d.getTime() }); return {label:days[d.getDay()],value:dt.reduce((s,t)=>s+t.total,0)} }) },[transactions])
-  const areaData  = useMemo(()=>getDailySeries({ transactions, refunds, days: 14 }),[transactions,refunds])
+  const areaData  = useMemo(()=>getDailySeries({ transactions, refunds, returns, days: 14 }),[transactions,refunds,returns])
   const payBreak  = useMemo(()=>{ const map={}; transactions.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})) },[transactions])
   const topProds  = useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); return Object.values(map).sort((a,b)=>b.sold-a.sold).slice(0,5) },[transactions])
   const leastProds= useMemo(()=>{ const map={}; transactions.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); products.forEach(p=>{ if(!map[p.name]) map[p.name]={name:p.name,sold:0,revenue:0} }); return Object.values(map).sort((a,b)=>a.sold-b.sold) },[transactions,products])
@@ -165,7 +166,7 @@ export default function Dashboard() {
   const repFiltered = useMemo(()=>transactions.filter(tx=>new Date(tx.createdAt)>=repStart),[transactions,repStart])
   const repFilteredPg = usePagination(repFiltered)
   useEffect(()=>{ repFilteredPg.setPage(1) },[repPeriod])
-  const repMetrics  = useMemo(()=>computeSalesMetrics({ transactions, refunds, from: repStart, to: now }),[transactions,refunds,repStart,now])
+  const repMetrics  = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: repStart, to: now }),[transactions,refunds,returns,repStart,now])
   const repAvg      = repMetrics.transactionCount?Math.round(repMetrics.netSales/repMetrics.transactionCount):0
   const repChartData = useMemo(()=>{
     if(repPeriod==='today') return Array.from({length:17},(_,i)=>{ const h=i+6; const hrs=repFiltered.filter(tx=>new Date(tx.createdAt).getHours()===h); return {label:`${h}:00`,value:hrs.reduce((s,t)=>s+t.total,0)} })

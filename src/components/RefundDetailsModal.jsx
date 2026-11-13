@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { useReactToPrint } from 'react-to-print'
 import { FileText, Printer, Package, Banknote, Smartphone, Tag, AlertTriangle } from 'lucide-react'
 import { useAppStore, useTransactionStore, useProductStore, useCustomerStore, useCategoryStore, useActivityLogStore, useRefundStore } from '../store'
 import ProductThumb from './ProductThumb'
-import { peso, fmtDate, fmtDateTime } from '../utils/helpers'
+import RejectReasonModal from './RejectReasonModal'
+import Modal from './Modal'
+import { peso, fmtDate, fmtDateTime, SALE_ADJUSTMENT_DAYS } from '../utils/helpers'
 
-const REFUND_WINDOW_DAYS = 15
-export const METHOD_ICON = { Cash: Banknote, GCash: Smartphone, 'Store Credit': Tag, Card: Banknote }
+export const METHOD_ICON = { Cash: Banknote, GCash: Smartphone, Card: Banknote }
 
 export const StatusBadge = ({ status, isLight }) => {
   const styles = isLight ? {
@@ -21,8 +22,8 @@ export const StatusBadge = ({ status, isLight }) => {
   const s = styles[status] || styles.Pending
   return (
     <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      padding: '3px 10px', borderRadius: 99,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+      padding: '3px 10px', borderRadius: 99, minWidth: 78,
       fontSize: 10, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
       background: s.bg, color: s.color, border: `1px solid ${s.border}`,
     }}>
@@ -48,17 +49,9 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   const { logs } = useActivityLogStore()
   const { refunds } = useRefundStore()
   const [processing, setProcessing] = useState('')
+  const [rejectOpen, setRejectOpen] = useState(false)
   const printRef = useRef(null)
   const handlePrint = useReactToPrint({ content: () => printRef.current })
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = e => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow }
-  }, [open, onClose])
 
   if (!open || !record) return null
 
@@ -72,9 +65,14 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   const txn = transactions.find(t => t.id === txnId)
   const customer = txn?.customerId ? customers.find(c => c.id === txn.customerId) : null
   const daysSince = txn ? Math.floor((new Date(record.createdAt) - new Date(txn.createdAt)) / 86400000) : null
-  const overPolicy = daysSince != null && daysSince > REFUND_WINDOW_DAYS
+  const overPolicy = daysSince != null && daysSince > SALE_ADJUSTMENT_DAYS
 
   const decisionLog = logs.find(l => l.entityType === entityType && l.entityLabel === entityLabel && (l.action === 'approved' || l.action === 'rejected'))
+  // "Requested By" has to come from the submission log, not record.processedBy —
+  // reject_refund (unlike approval) now overwrites processed_by with the
+  // REJECTING admin's name (see "Rejected by" box below), so the only way
+  // to still show who originally filed a rejected refund is this log entry.
+  const submittedLog = logs.find(l => l.entityType === entityType && l.entityLabel === entityLabel && l.action === 'submitted')
 
   const siblings = refunds.filter(x => x.transactionId === txnId && x.id !== record.id)
 
@@ -89,18 +87,18 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
     setProcessing('')
     onClose()
   }
-  const handleRejectClick = async () => {
-    setProcessing('reject')
-    await onReject(record)
-    useActivityLogStore.getState().fetchLogs()
-    setProcessing('')
-    onClose()
+  // The actual reject call + validation live in RejectReasonModal; this
+  // just forwards the reason and reports success/failure back to it so it
+  // knows whether to close itself or show the error and stay open.
+  const handleRejectConfirm = async (reason) => {
+    const result = await onReject(record, reason)
+    if (!result?.error) { useActivityLogStore.getState().fetchLogs(); onClose() }
+    return result
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', padding: 16 }}
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="card animate-scale-in" style={{ width: 'min(720px,94vw)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <Modal open={open} onClose={onClose} contentStyle={{ width: 'min(720px,94vw)', maxHeight: '90vh' }}>
+      <div className="card animate-scale-in" style={{ maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
         {/* Sticky header */}
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0 }}>
@@ -130,7 +128,7 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
               {daysSince != null && (
                 <div style={{ fontSize: 10, fontWeight: 700, marginTop: 2, display: 'flex', alignItems: 'center', gap: 4, color: overPolicy ? 'var(--red)' : 'var(--text3)' }}>
                   {overPolicy && <AlertTriangle size={11} />}
-                  {daysSince}d since purchase{overPolicy ? ' · past 15-day policy' : ''}
+                  {daysSince}d since purchase{overPolicy ? ` · past ${SALE_ADJUSTMENT_DAYS}-day policy` : ''}
                 </div>
               )}
             </MetaCard>
@@ -146,13 +144,22 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><MethodIcon size={12} />{method}</span>
               {txn?.payment && <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 500, marginTop: 2 }}>Originally paid via {txn.payment}</div>}
             </MetaCard>
-            <MetaCard label="Requested By">{record.processedBy || '—'}</MetaCard>
+            <MetaCard label="Requested By">{submittedLog?.actorName || record.processedBy || '—'}</MetaCard>
             <MetaCard label="Decision">
               {decisionLog
                 ? <>{decisionLog.actorName} <span style={{ fontWeight: 500, color: 'var(--text3)' }}>· {fmtDate(decisionLog.createdAt)}</span></>
                 : <span style={{ color: 'var(--text3)', fontWeight: 500 }}>{record.status === 'Pending' ? 'Awaiting admin' : '—'}</span>}
             </MetaCard>
           </div>
+
+          {/* Rejection box — the whole point of this feature: a cashier (or
+              an admin reviewing remotely) sees exactly why, right away. */}
+          {record.status === 'Rejected' && (
+            <div style={{ background: isLight ? '#fee2e2' : 'rgba(239,68,68,0.08)', border: `1px solid ${isLight ? '#fecaca' : 'rgba(239,68,68,0.25)'}`, borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', lineHeight: 1.5, marginBottom: 6 }}>Reason: {record.rejectionReason || '—'}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--text3)' }}>Rejected by {record.processedBy || '—'} on {fmtDateTime(record.processedAt || record.createdAt)}</div>
+            </div>
+          )}
 
           {/* Reason + notes */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 10 }}>
@@ -168,7 +175,10 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
             </div>
           </div>
 
-          {/* Items */}
+          {/* Items — only present on refunds submitted before the money-only
+              redesign; a current refund has no items at all (see Q2/Q3 in
+              the refund audit), so this section is simply omitted for those. */}
+          {items.length > 0 && (
           <div>
             <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 8 }}>
               Items ({items.length})
@@ -203,6 +213,7 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
               })}
             </div>
           </div>
+          )}
 
           {/* Totals */}
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
@@ -248,8 +259,8 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
           </button>
           {record.status === 'Pending' && isAdmin ? (
             <>
-              <button onClick={handleRejectClick} disabled={!!processing} className="btn-danger" style={{ opacity: processing ? .6 : 1 }}>
-                {processing === 'reject' ? 'Rejecting…' : 'Reject'}
+              <button onClick={() => setRejectOpen(true)} disabled={!!processing} className="btn-danger" style={{ opacity: processing ? .6 : 1 }}>
+                Reject
               </button>
               <button onClick={handleApproveClick} disabled={!!processing} className="btn-success" style={{ opacity: processing ? .6 : 1 }}>
                 {processing === 'approve' ? 'Approving…' : 'Approve'}
@@ -260,6 +271,8 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
           )}
         </div>
       </div>
+
+      <RejectReasonModal open={rejectOpen} onClose={() => setRejectOpen(false)} onConfirm={handleRejectConfirm} idLabel={String(record.id).padStart(4, '0')} />
 
       {/* Printable slip — hidden on screen, shown via the global #receipt-printable print rule (index.css) */}
       <div style={{ display: 'none' }}>
@@ -288,6 +301,6 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }

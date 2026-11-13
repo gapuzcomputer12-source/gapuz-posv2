@@ -6,6 +6,7 @@ export const translations = {
   reports:    'Reports',
   customers:  'Customers',
   refunds:    'Refunds',
+  returns:    'Returns',
   logout:     'Logout',
   staff_accounts: 'Staff Accounts',
 
@@ -204,10 +205,8 @@ export const translations = {
   refund_list:    'Refund List',
   orig_txn:       'Original TXN #',
   look_up:        'Look Up',
-  select_items:   'Select items to return',
   reason:         'Reason',
   refund_method:  'Refund Method',
-  store_credit:   'Store Credit',
   notes:          'Notes',
   approve:        'Approve',
   reject:         'Reject',
@@ -241,4 +240,3 @@ export const translations = {
 }
 
 export const CATEGORIES = ['All', 'Processors', 'RAM', 'GPU', 'Storage', 'Laptops', 'Peripherals', 'Accessories', 'Services']
-export const REFUND_REASONS = ['Defective product', 'Wrong item delivered', 'Customer changed mind', 'Item not as described', 'Other']

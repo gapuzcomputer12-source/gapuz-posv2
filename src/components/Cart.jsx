@@ -1,18 +1,19 @@
 import { useRef, useState, useEffect } from 'react'
 import { useReactToPrint } from 'react-to-print'
-import { Banknote, Smartphone, CreditCard, Zap, ShoppingCart, Package, AlertTriangle, Mail, Printer, Check, PauseCircle } from 'lucide-react'
+import { Banknote, Smartphone, CreditCard, Zap, ShoppingCart, Package, AlertTriangle, Mail, Printer, Check, PauseCircle, X } from 'lucide-react'
 import { useCartStore, useAuthStore, useTransactionStore, useProductStore, useCustomerStore } from '../store'
 import { supabase } from '../lib/supabaseClient'
 import { peso, fmtTxnId, useT, useBreakpoint } from '../utils/helpers'
 import { useToast } from '../utils/toast'
 import Receipt from './Receipt'
 import ProductThumb from './ProductThumb'
+import Modal from './Modal'
 
 const PAY = [{id:'Cash',label:'Cash',icon:Banknote},{id:'GCash',label:'GCash',icon:Smartphone},{id:'Card',label:'Card',icon:CreditCard}]
 
 export default function Cart({ products, customers, onHold }) {
   const { items, discount, payMethod, customerId, splitMode, split1Pay, split2Pay, split1Amt,
-          removeItem, setQty, clearCart, setDiscount, setPayMethod, setCustomer,
+          removeItem, removeSerialFromItem, setQty, clearCart, setDiscount, setPayMethod, setCustomer,
           setSplitMode, setSplit1Pay, setSplit2Pay, setSplit1Amt, getTotals } = useCartStore()
   const { user, role } = useAuthStore()
   const addTransaction = useTransactionStore(s=>s.addTransaction)
@@ -49,6 +50,12 @@ export default function Cart({ products, customers, onHold }) {
       if(!cashGiven.trim()){toast('Please enter the cash given','error');return}
       if(parseFloat(cashGiven)<totalInt){toast('Cash given is less than total!','error');return}
     }
+    // Defensive: every serialized line's unit count must come from scanned
+    // serials, never a bare qty — addSerialItem/removeSerialFromItem keep
+    // these in sync, so this should never actually fire.
+    const badLine = items.find(i=>i.hasSerial && (i.serials?.length||0)!==i.qty)
+    if(badLine){ toast(`${badLine.name} is missing a scanned serial for one of its units`,'error'); return }
+
     setCheckingOut(true)
     setStep('processing')
     const payDesc = splitMode?`${split1Pay}+${split2Pay}`:payMethod
@@ -65,8 +72,27 @@ export default function Cart({ products, customers, onHold }) {
       }),
       new Promise(r=>setTimeout(r,650)),
     ])
+    if(!txn) { setCheckingOut(false); toast('Checkout failed — please try again','error'); setStep('method'); return }
+
+    // Serials are stamped Sold BEFORE stock is deducted — if this fails,
+    // the sale never actually happened, so it's voided and nothing else
+    // (stock, loyalty points) should run.
+    const serializedItems = items.filter(i=>i.hasSerial && i.serials?.length)
+    if(serializedItems.length){
+      const { error: serialErr } = await supabase.rpc('mark_serials_sold', {
+        p_transaction_id: txn.id,
+        p_items: serializedItems.map(i=>({ product_id:i.id, serials:i.serials })),
+      })
+      if(serialErr){
+        await supabase.rpc('void_failed_sale', { p_transaction_id: txn.id })
+        setCheckingOut(false)
+        toast(`Checkout failed: ${serialErr.message}`,'error')
+        setStep('method')
+        return
+      }
+    }
+
     setCheckingOut(false)
-    if(!txn) { toast('Checkout failed — please try again','error'); setStep('method'); return }
     deductStock(items)
     if(cust) addPoints(cust.id, totalInt)
     setLastTxn({...txn})
@@ -137,21 +163,38 @@ export default function Cart({ products, customers, onHold }) {
                   </div>
                   <button onClick={()=>removeItem(item.id)} style={{background:'none',border:'none',color:'var(--text3)',cursor:'pointer',fontSize:18,lineHeight:1}} onMouseEnter={e=>e.target.style.color='var(--red)'} onMouseLeave={e=>e.target.style.color='var(--text3)'}>×</button>
                 </div>
-                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:6}}>
-                    {[-1,1].map(d=>{
-                      const isMinus = d<0
-                      return (
-                        <button key={d} onClick={()=>setQty(item.id,item.qty+d,prod?.stock||99)} style={{order:isMinus?0:2,width:26,height:26,borderRadius:7,border:'1px solid var(--border2)',background:'var(--bg4)',color:'var(--text2)',cursor:'pointer',fontSize:14,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',transition:'all .12s'}} onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#0a0a0a';e.currentTarget.style.borderColor='var(--accent)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--bg4)';e.currentTarget.style.color='var(--text2)';e.currentTarget.style.borderColor='var(--border2)'}}>{isMinus?'−':'+'}</button>
-                      )
-                    })}
-                    <input type="number" min="1" max={prod?.stock||99} value={item.qty} className="qty-input"
-                      onChange={e=>{ const v=parseInt(e.target.value); setQty(item.id, isNaN(v)?1:v, prod?.stock||99) }}
-                      onFocus={e=>e.target.select()}
-                      style={{order:1,width:48,height:26,textAlign:'center',fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,border:'1px solid var(--border2)',borderRadius:7,background:'var(--bg4)',color:'var(--text)',padding:'0 2px',outline:'none',flexShrink:0}}/>
+                {item.hasSerial ? (
+                  <div>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:5,marginBottom:6}}>
+                      {(item.serials||[]).map(sn=>(
+                        <span key={sn} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:10.5,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,padding:'3px 5px 3px 8px',borderRadius:99,background:'var(--bg4)',border:'1px solid var(--border2)',color:'var(--text2)'}}>
+                          {sn}
+                          <button onClick={()=>removeSerialFromItem(item.id,sn)} style={{background:'none',border:'none',color:'var(--text3)',cursor:'pointer',display:'flex',padding:1}} onMouseEnter={e=>e.currentTarget.style.color='var(--red)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text3)'}><X size={10}/></button>
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                      <span style={{fontSize:11,color:'var(--text3)'}}>{item.qty} unit{item.qty===1?'':'s'}</span>
+                      <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,color:'var(--accent)'}}>{peso(item.price*item.qty)}</span>
+                    </div>
                   </div>
-                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,color:'var(--accent)'}}>{peso(item.price*item.qty)}</span>
-                </div>
+                ) : (
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      {[-1,1].map(d=>{
+                        const isMinus = d<0
+                        return (
+                          <button key={d} onClick={()=>setQty(item.id,item.qty+d,prod?.stock||99)} style={{order:isMinus?0:2,width:26,height:26,borderRadius:7,border:'1px solid var(--border2)',background:'var(--bg4)',color:'var(--text2)',cursor:'pointer',fontSize:14,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',transition:'all .12s'}} onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#0a0a0a';e.currentTarget.style.borderColor='var(--accent)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--bg4)';e.currentTarget.style.color='var(--text2)';e.currentTarget.style.borderColor='var(--border2)'}}>{isMinus?'−':'+'}</button>
+                        )
+                      })}
+                      <input type="number" min="1" max={prod?.stock||99} value={item.qty} className="qty-input"
+                        onChange={e=>{ const v=parseInt(e.target.value); setQty(item.id, isNaN(v)?1:v, prod?.stock||99) }}
+                        onFocus={e=>e.target.select()}
+                        style={{order:1,width:48,height:26,textAlign:'center',fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,border:'1px solid var(--border2)',borderRadius:7,background:'var(--bg4)',color:'var(--text)',padding:'0 2px',outline:'none',flexShrink:0}}/>
+                    </div>
+                    <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,color:'var(--accent)'}}>{peso(item.price*item.qty)}</span>
+                  </div>
+                )}
               </div>
             )
           })
@@ -196,7 +239,7 @@ export default function Cart({ products, customers, onHold }) {
 
       {/* ══════════ CHECKOUT MODAL ══════════ */}
       {checkoutOpen&&(
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.55)',padding:16}}>
+        <Modal open onClose={cancelCheckout} closeOnBackdrop={false} closeOnEsc={false}>
 
           {/* STEP 1 — Payment method */}
           {step==='method'&&(
@@ -386,7 +429,7 @@ export default function Cart({ products, customers, onHold }) {
               </div>
             </div>
           )}
-        </div>
+        </Modal>
       )}
     </div>
   )

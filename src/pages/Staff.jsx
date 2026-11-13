@@ -6,6 +6,7 @@ import { useT, fmtDate, passwordError } from '../utils/helpers'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
+import Modal from '../components/Modal'
 
 const EMPTY = { name:'', email:'', password:'', confirmPassword:'', role:'cashier' }
 
@@ -129,11 +130,8 @@ export default function Staff() {
   }
 
   return (
-    <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:20,gap:16}}>
-      <div className="page-header">
-        <div className="page-title" style={{display:'flex',alignItems:'center',gap:8}}>
-          <UserPlus size={18} style={{color:'var(--accent)'}}/>{t('staff_accounts')}
-        </div>
+    <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:'12px 20px 20px',gap:16}}>
+      <div className="page-header" style={{justifyContent:'flex-end'}}>
         <button onClick={openAdd} className="btn-primary">+ {t('add_cashier')}</button>
       </div>
 
@@ -197,8 +195,8 @@ export default function Staff() {
       <Pagination {...pg}/>
 
       {(modal==='add'||modal==='edit') && (
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&closeModal()}>
-          <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:0,overflow:'hidden'}}>
+        <Modal open onClose={closeModal} contentStyle={{width:'min(420px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:0,overflow:'hidden'}}>
 
             {/* Header */}
             <div style={{padding:'22px 26px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -272,7 +270,7 @@ export default function Staff() {
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Suspend / Reactivate confirmation */}
@@ -282,8 +280,8 @@ export default function Staff() {
         const actionLabel = willReactivate ? t('reactivate') : t('suspend')
         const busy = togglingId === statusConfirm.id
         return (
-          <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.6)'}} onClick={e=>e.target===e.currentTarget&&!busy&&setStatusConfirm(null)}>
-            <div className="card animate-scale-in" style={{width:'min(360px,92vw)',padding:28,textAlign:'center'}}>
+          <Modal open onClose={()=>setStatusConfirm(null)} closeOnBackdrop={!busy} closeOnEsc={!busy} contentStyle={{width:'min(360px,92vw)'}}>
+            <div className="card animate-scale-in" style={{padding:28,textAlign:'center'}}>
               <div style={{width:44,height:44,borderRadius:'50%',background:willReactivate?'rgba(34,197,94,0.12)':'rgba(239,68,68,0.12)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 14px',color}}>
                 {willReactivate ? <UserCheck size={22}/> : <AlertTriangle size={22}/>}
               </div>
@@ -300,7 +298,7 @@ export default function Staff() {
                 </button>
               </div>
             </div>
-          </div>
+          </Modal>
         )
       })()}
 
@@ -308,8 +306,8 @@ export default function Staff() {
       {deleteConfirm && (() => {
         const busy = deletingId === deleteConfirm.id
         return (
-          <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.6)'}} onClick={e=>e.target===e.currentTarget&&!busy&&setDeleteConfirm(null)}>
-            <div className="card animate-scale-in" style={{width:'min(360px,92vw)',padding:28,textAlign:'center'}}>
+          <Modal open onClose={()=>setDeleteConfirm(null)} closeOnBackdrop={!busy} closeOnEsc={!busy} contentStyle={{width:'min(360px,92vw)'}}>
+            <div className="card animate-scale-in" style={{padding:28,textAlign:'center'}}>
               <div style={{width:44,height:44,borderRadius:'50%',background:'rgba(239,68,68,0.12)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 14px',color:'var(--red)'}}>
                 <Trash2 size={20}/>
               </div>
@@ -324,7 +322,7 @@ export default function Staff() {
                 </button>
               </div>
             </div>
-          </div>
+          </Modal>
         )
       })()}
     </div>

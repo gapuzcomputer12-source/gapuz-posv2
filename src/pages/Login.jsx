@@ -4,6 +4,7 @@ import { useAuthStore, useAppStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, useLoginMobile } from '../utils/helpers'
 import LoginSkeleton from '../components/LoginSkeleton'
+import Modal from '../components/Modal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
 const BRAND_GREEN = '#0A8F63'
@@ -389,10 +390,9 @@ export default function Login() {
       </div>
 
       {/* Forgot password modal */}
-      {forgotOpen && (
-        <div style={{ position:'fixed', inset:0, zIndex:200, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.6)', padding:16 }}
-             onClick={e=>e.target===e.currentTarget&&setForgotOpen(false)}>
-          <div className="card animate-scale-in" style={{ width:'min(360px,92vw)', padding:28 }}>
+      {forgotOpen&&(
+        <Modal open onClose={()=>setForgotOpen(false)} contentStyle={{ width:'min(360px,92vw)' }}>
+          <div className="card animate-scale-in" style={{ padding:28 }}>
             <div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>Reset your password</div>
             <div style={{ fontSize:12, color:'var(--text2)', marginBottom:18, lineHeight:1.5 }}>Enter your account email and we'll send you a link to set a new password.</div>
             <label htmlFor="reset-email" style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text3)', marginBottom:7, textTransform:'uppercase', letterSpacing:'.6px' }}>Email</label>
@@ -407,7 +407,7 @@ export default function Login() {
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

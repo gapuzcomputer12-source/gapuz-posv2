@@ -30,6 +30,7 @@ CREATE TABLE products (
   icon         VARCHAR(10),
   image        TEXT,
   sold         INTEGER NOT NULL DEFAULT 0,
+  has_serial   BOOLEAN NOT NULL DEFAULT false,
   created_at   TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   last_sold_at TIMESTAMP WITH TIME ZONE
 );
@@ -164,6 +165,43 @@ CREATE TABLE activity_log (
   created_at   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 10. PRODUCT_SERIALS (one row per physical unit, for serialized products —
+--     GPUs, laptops, motherboards, SSDs, etc. products.stock stays the
+--     single source of truth for quantity; this is a side-channel for
+--     which units make up that number, kept in sync via add_serials /
+--     delete_serial / mark_serials_sold below.)
+CREATE TABLE product_serials (
+  serial_id           SERIAL PRIMARY KEY,
+  product_id          INTEGER NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+  serial_number       VARCHAR(100) NOT NULL UNIQUE,
+  status              VARCHAR(20) NOT NULL DEFAULT 'In Stock' CHECK (status IN ('In Stock','Sold','Defective')),
+  transaction_id      INTEGER REFERENCES transactions(transaction_id) ON DELETE SET NULL,
+  transaction_item_id INTEGER REFERENCES transaction_items(item_id) ON DELETE SET NULL,
+  sold_at             TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 11. RETURNS (merchandise returns — the item physically comes back; see
+--     refunds above for the money-only flow). Rows are only created
+--     through create_return (SECURITY DEFINER, below), which enforces the
+--     7-day window and serial/qty validation a raw insert couldn't.
+CREATE TABLE returns (
+  return_id      SERIAL PRIMARY KEY,
+  transaction_id INTEGER REFERENCES transactions(transaction_id) ON DELETE SET NULL,
+  customer_name  VARCHAR(100) DEFAULT 'Walk-in',
+  reason         VARCHAR(150),
+  method         VARCHAR(30),
+  notes          TEXT,
+  subtotal       NUMERIC(10,2) DEFAULT 0,
+  vat            NUMERIC(10,2) DEFAULT 0,
+  total          NUMERIC(10,2) NOT NULL DEFAULT 0,
+  status         VARCHAR(20)  NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Approved','Rejected')),
+  processed_by   VARCHAR(100),
+  items          JSONB,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  processed_at   TIMESTAMPTZ
+);
+
 -- ROW LEVEL SECURITY
 ALTER TABLE profiles          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE products          ENABLE ROW LEVEL SECURITY;
@@ -174,6 +212,8 @@ ALTER TABLE refunds           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE holds             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE categories        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE activity_log      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE product_serials   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE returns           ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow authenticated read" ON profiles FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated read" ON products FOR SELECT TO authenticated USING (true);
@@ -183,6 +223,8 @@ CREATE POLICY "Allow authenticated read" ON transaction_items FOR SELECT TO auth
 CREATE POLICY "Allow authenticated read" ON refunds FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated read" ON holds FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated read" ON categories FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Allow authenticated read" ON product_serials FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Allow authenticated read" ON returns FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Admins can read activity log" ON activity_log FOR SELECT TO authenticated
   USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
 
@@ -224,6 +266,24 @@ CREATE POLICY "Allow authenticated delete" ON customers FOR DELETE TO authentica
 CREATE POLICY "Admins can delete categories" ON categories FOR DELETE TO authenticated
   USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
 
+-- Product serials: cashiers never touch rows directly — only through
+-- add_serials / delete_serial / mark_serials_sold (all SECURITY DEFINER,
+-- below). These policies are defense-in-depth against a raw
+-- supabase.from('product_serials') call bypassing the RPCs.
+CREATE POLICY "Admins can insert serials" ON product_serials FOR INSERT TO authenticated
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+CREATE POLICY "Admins can update serials" ON product_serials FOR UPDATE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'))
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+CREATE POLICY "Admins can delete serials" ON product_serials FOR DELETE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+
+-- Returns: no INSERT policy on purpose — rows are only created through
+-- create_return (SECURITY DEFINER, below). Only an admin can approve/reject.
+CREATE POLICY "Admins can update returns" ON returns FOR UPDATE TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'))
+  WITH CHECK (EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin'));
+
 -- INDEXES
 CREATE INDEX idx_transactions_customer   ON transactions(customer_id);
 CREATE INDEX idx_transactions_created_at ON transactions(created_at);
@@ -233,6 +293,11 @@ CREATE INDEX idx_refunds_transaction     ON refunds(transaction_id);
 CREATE INDEX idx_refunds_status          ON refunds(status);
 CREATE INDEX idx_products_category       ON products(category);
 CREATE INDEX idx_activity_log_created_at ON activity_log(created_at);
+CREATE INDEX idx_product_serials_product ON product_serials(product_id);
+CREATE INDEX idx_product_serials_status  ON product_serials(status);
+CREATE INDEX idx_product_serials_txn     ON product_serials(transaction_id);
+CREATE INDEX idx_returns_transaction     ON returns(transaction_id);
+CREATE INDEX idx_returns_status          ON returns(status);
 
 -- VIEWS
 -- security_invoker = true makes each view run with the querying user's own
@@ -322,3 +387,316 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION deduct_stock(jsonb) TO authenticated;
+
+-- Admin registers serials when stock arrives; stock increases by the number
+-- added, atomically with the insert (SECURITY DEFINER so it can both bypass
+-- the admin-only INSERT policy above *and* write products.stock in one go).
+CREATE OR REPLACE FUNCTION add_serials(p_product_id INT, p_serials TEXT[])
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_count INT;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin') THEN
+    RAISE EXCEPTION 'Only admins can add serial numbers';
+  END IF;
+
+  INSERT INTO product_serials (product_id, serial_number)
+  SELECT p_product_id, trim(s) FROM unnest(p_serials) s WHERE trim(s) <> '';
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+
+  UPDATE products SET stock = stock + v_count WHERE product_id = p_product_id;
+
+  RETURN v_count;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION add_serials(INT, TEXT[]) TO authenticated;
+
+-- Deletes a serial only while it's still In Stock, decreasing stock by 1 in
+-- the same atomic step (row-locked so it can't race a concurrent sale of
+-- the same serial via mark_serials_sold).
+CREATE OR REPLACE FUNCTION delete_serial(p_serial_id INT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_row product_serials%ROWTYPE;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin') THEN
+    RAISE EXCEPTION 'Only admins can delete serial numbers';
+  END IF;
+
+  SELECT * INTO v_row FROM product_serials WHERE serial_id = p_serial_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Serial not found';
+  END IF;
+  IF v_row.status <> 'In Stock' THEN
+    RAISE EXCEPTION 'Only an in-stock serial can be deleted (status: %)', v_row.status;
+  END IF;
+
+  DELETE FROM product_serials WHERE serial_id = p_serial_id;
+  UPDATE products SET stock = GREATEST(stock - 1, 0) WHERE product_id = v_row.product_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION delete_serial(INT) TO authenticated;
+
+-- Marks scanned serials as Sold for a transaction (row-locked, validated).
+-- p_items: [{"product_id":5,"serials":["SN1","SN2"]}]
+-- Any exception here rolls back everything this call touched (plpgsql
+-- function bodies run inside the calling statement's transaction), so a
+-- failure partway through never leaves some serials marked Sold and others
+-- not for the same checkout.
+CREATE OR REPLACE FUNCTION mark_serials_sold(p_transaction_id INT, p_items JSONB)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  it        JSONB;
+  s         TEXT;
+  v_row     product_serials%ROWTYPE;
+  v_item_id INT;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  FOR it IN SELECT * FROM jsonb_array_elements(p_items) LOOP
+    SELECT item_id INTO v_item_id FROM transaction_items
+      WHERE transaction_id = p_transaction_id AND product_id = (it->>'product_id')::INT;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'No transaction item for product % on transaction %', (it->>'product_id')::INT, p_transaction_id;
+    END IF;
+
+    FOR s IN SELECT jsonb_array_elements_text(it->'serials') LOOP
+      SELECT * INTO v_row FROM product_serials WHERE serial_number = s FOR UPDATE;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Serial % not found', s;
+      END IF;
+      IF v_row.product_id <> (it->>'product_id')::INT THEN
+        RAISE EXCEPTION 'Serial % belongs to a different product', s;
+      END IF;
+      IF v_row.status <> 'In Stock' THEN
+        RAISE EXCEPTION 'Serial % is not in stock (status: %)', s, v_row.status;
+      END IF;
+
+      UPDATE product_serials
+        SET status = 'Sold', transaction_id = p_transaction_id,
+            transaction_item_id = v_item_id, sold_at = now()
+        WHERE serial_id = v_row.serial_id;
+    END LOOP;
+  END LOOP;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION mark_serials_sold(INT, JSONB) TO authenticated;
+
+-- Narrow, audited rollback for the one failure case checkout needs to
+-- undo: a transaction was just inserted but mark_serials_sold then failed,
+-- so the sale never actually completed. Deliberately NOT a blanket DELETE
+-- policy on transactions (that would let any cashier erase real sales
+-- history) — this only ever removes a transaction that is seconds old AND
+-- has no serial successfully marked Sold against it yet.
+CREATE OR REPLACE FUNCTION void_failed_sale(p_transaction_id INT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  DELETE FROM transactions
+   WHERE transaction_id = p_transaction_id
+     AND created_at > now() - interval '2 minutes'
+     AND NOT EXISTS (
+       SELECT 1 FROM product_serials
+        WHERE transaction_id = p_transaction_id AND status = 'Sold'
+     );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION void_failed_sale(INT) TO authenticated;
+
+-- Cashier submits a return; enforces the 7-day policy on the server (the
+-- UI also shows/blocks on this, but the server check is the one that
+-- actually matters). Also blocks:
+--   * returning a serial that wasn't Sold on this exact transaction, or
+--     already has a Pending return against it;
+--   * returning more of a non-serialized line than is still outstanding
+--     (sold qty minus whatever's already Pending/Approved in another
+--     return for that same line);
+--   * returning anything that already has a Pending/Approved REFUND
+--     against the same product on this transaction — Refunds don't track
+--     serials or per-unit detail, so the only safe way to guarantee a
+--     sale's money is never double-deducted (once via Refunds, once via
+--     Returns) is to refuse the Return outright in that case.
+CREATE OR REPLACE FUNCTION create_return(
+  p_transaction_id INT, p_items JSONB, p_reason TEXT, p_method TEXT, p_notes TEXT,
+  p_subtotal NUMERIC, p_vat NUMERIC, p_total NUMERIC)
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tx      transactions%ROWTYPE;
+  v_id      INT;
+  it        JSONB;
+  s         TEXT;
+  v_item_id INT;
+  v_prod_id INT;
+  v_sold_qty INT;
+  v_req_qty  INT;
+  v_already_returned INT;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  SELECT * INTO v_tx FROM transactions WHERE transaction_id = p_transaction_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Transaction not found';
+  END IF;
+  IF now() > v_tx.created_at + interval '7 days' THEN
+    RAISE EXCEPTION 'Return period expired: items can only be returned within 7 days of purchase';
+  END IF;
+
+  FOR it IN SELECT * FROM jsonb_array_elements(p_items) LOOP
+    v_item_id := (it->>'item_id')::INT;
+    v_prod_id := (it->>'product_id')::INT;
+
+    SELECT qty INTO v_sold_qty FROM transaction_items
+      WHERE item_id = v_item_id AND transaction_id = p_transaction_id;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Item % was not part of this transaction', v_item_id;
+    END IF;
+
+    IF EXISTS (
+      SELECT 1 FROM refunds r, jsonb_array_elements(r.items) ri
+      WHERE r.transaction_id = p_transaction_id
+        AND r.status IN ('Pending','Approved')
+        AND (ri->>'id')::INT = v_prod_id
+    ) THEN
+      RAISE EXCEPTION 'This item already has a refund request on this sale — it cannot also be returned';
+    END IF;
+
+    IF jsonb_array_length(COALESCE(it->'serials','[]'::jsonb)) > 0 THEN
+      IF (SELECT COUNT(DISTINCT x) FROM jsonb_array_elements_text(it->'serials') x) <> jsonb_array_length(it->'serials') THEN
+        RAISE EXCEPTION 'Duplicate serial in return request for item %', v_item_id;
+      END IF;
+      FOR s IN SELECT jsonb_array_elements_text(it->'serials') LOOP
+        IF NOT EXISTS (
+          SELECT 1 FROM product_serials
+          WHERE serial_number = s AND transaction_id = p_transaction_id AND status = 'Sold'
+        ) THEN
+          RAISE EXCEPTION 'Serial % was not sold in this transaction or was already returned', s;
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM returns r,
+            jsonb_array_elements(r.items) ri,
+            jsonb_array_elements_text(COALESCE(ri->'serials','[]'::jsonb)) rs
+          WHERE r.status = 'Pending' AND rs = s
+        ) THEN
+          RAISE EXCEPTION 'Serial % already has a pending return', s;
+        END IF;
+      END LOOP;
+    ELSE
+      -- Non-serialized line: requested qty can't exceed what's left to
+      -- return once whatever is already Pending/Approved for this same
+      -- item is accounted for (Approved doesn't flip any status flag for
+      -- a non-serialized item the way a serial does, so it must still
+      -- count against the pool here).
+      v_req_qty := COALESCE((it->>'qty')::INT, 0);
+      SELECT COALESCE(SUM((ri->>'qty')::INT), 0) INTO v_already_returned
+        FROM returns r, jsonb_array_elements(r.items) ri
+        WHERE r.status IN ('Pending','Approved')
+          AND (ri->>'item_id')::INT = v_item_id
+          AND jsonb_array_length(COALESCE(ri->'serials','[]'::jsonb)) = 0;
+      IF v_req_qty <= 0 OR v_req_qty > (v_sold_qty - v_already_returned) THEN
+        RAISE EXCEPTION 'Return quantity for item % exceeds what is left to return', v_item_id;
+      END IF;
+    END IF;
+  END LOOP;
+
+  INSERT INTO returns(transaction_id, customer_name, reason, method, notes,
+                      subtotal, vat, total, items, status)
+  VALUES (p_transaction_id, v_tx.customer_name, p_reason, p_method, p_notes,
+          p_subtotal, p_vat, p_total, p_items, 'Pending')
+  RETURNING return_id INTO v_id;
+
+  RETURN v_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION create_return(INT, JSONB, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC) TO authenticated;
+
+-- Admin approves; per unit: Resellable (back to stock) or Defective (not
+-- restocked). Atomic — one call either fully applies or fully fails.
+-- p_conditions: {"<serial_number>":"Defective", "item:<item_id>":"Defective"}
+-- — anything not listed defaults to Resellable.
+CREATE OR REPLACE FUNCTION approve_return(p_return_id INT, p_conditions JSONB DEFAULT '{}'::jsonb)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_ret    returns%ROWTYPE;
+  it       JSONB;
+  s        TEXT;
+  v_name   TEXT;
+  v_resell INT;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin' AND active) THEN
+    RAISE EXCEPTION 'Only admins can approve returns';
+  END IF;
+
+  SELECT * INTO v_ret FROM returns WHERE return_id = p_return_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Return not found';
+  END IF;
+  IF v_ret.status <> 'Pending' THEN
+    RAISE EXCEPTION 'Return is already %', v_ret.status;
+  END IF;
+
+  SELECT name INTO v_name FROM profiles WHERE id = auth.uid();
+
+  FOR it IN SELECT * FROM jsonb_array_elements(v_ret.items) LOOP
+    IF jsonb_array_length(COALESCE(it->'serials','[]'::jsonb)) > 0 THEN
+      v_resell := 0;
+      FOR s IN SELECT jsonb_array_elements_text(it->'serials') LOOP
+        IF COALESCE(p_conditions->>s, 'Resellable') = 'Defective' THEN
+          UPDATE product_serials SET status = 'Defective' WHERE serial_number = s;
+        ELSE
+          UPDATE product_serials
+            SET status = 'In Stock', transaction_id = NULL, transaction_item_id = NULL, sold_at = NULL
+            WHERE serial_number = s;
+          v_resell := v_resell + 1;
+        END IF;
+      END LOOP;
+    ELSE
+      v_resell := CASE WHEN COALESCE(p_conditions->>('item:' || (it->>'item_id')), 'Resellable') = 'Defective'
+                       THEN 0 ELSE (it->>'qty')::INT END;
+    END IF;
+    IF v_resell > 0 THEN
+      UPDATE products SET stock = stock + v_resell WHERE product_id = (it->>'product_id')::INT;
+    END IF;
+  END LOOP;
+
+  UPDATE returns SET status = 'Approved', processed_at = now(), processed_by = v_name
+    WHERE return_id = p_return_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION approve_return(INT, JSONB) TO authenticated;

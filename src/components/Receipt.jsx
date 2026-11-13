@@ -23,8 +23,11 @@ const Receipt = forwardRef(function Receipt({ txn, role }, ref) {
       <div style={{borderTop:'1px dashed #ccc',borderBottom:'1px dashed #ccc',padding:'8px 0',marginBottom:8}}>
         <div style={{display:'flex',justifyContent:'space-between',fontSize:10,fontWeight:700,color:'#888',marginBottom:4}}><span>ITEM</span><span>QTY</span><span>AMOUNT</span></div>
         {(txn.items||[]).map((item,i)=>(
-          <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:10,marginBottom:2}}>
-            <span style={{flex:1}}>{item.name}</span><span style={{margin:'0 8px'}}>x{item.qty}</span><span>{peso(item.price*item.qty)}</span>
+          <div key={i} style={{marginBottom:2}}>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:10}}>
+              <span style={{flex:1}}>{item.name}</span><span style={{margin:'0 8px'}}>x{item.qty}</span><span>{peso(item.price*item.qty)}</span>
+            </div>
+            {item.serials?.length>0&&<div style={{fontSize:8.5,color:'#888',paddingLeft:4}}>SN: {item.serials.join(', ')}</div>}
           </div>
         ))}
       </div>

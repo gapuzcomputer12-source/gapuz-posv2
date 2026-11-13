@@ -5,6 +5,7 @@ import {
   Gamepad2, Smartphone, Tablet, Wrench, Package, Banknote, CreditCard, SplitSquareHorizontal,
 } from 'lucide-react'
 import { translations } from '../i18n/translations'
+import { isMoneyBack } from './salesMetrics'
 
 // Negative amounts always render as "−₱1,234.00" (minus before the peso
 // sign), not toLocaleString's default "₱-1,234.00" — keeps sign placement
@@ -121,7 +122,50 @@ export const ICON_MAP = {
 }
 export const ICON_OPTIONS = Object.keys(ICON_MAP)
 
-export const REFUND_REASONS =['Defective product','Wrong item delivered','Customer changed mind','Item not as described','Duplicate purchase','Other']
+// Refund = money only (billing corrections — no item comes back). Reasons
+// here are deliberately billing/service-shaped and plain-language (what a
+// cashier would actually say to a customer); an item physically coming
+// back is always a Return (see RETURN_REASONS below). Single source of
+// truth for the reason dropdown, the details modal, and reports — they
+// all display whatever string was saved, so this list only governs what a
+// *new* refund can be filed as; changing it never touches already-saved
+// refunds (see REFUND_REASON_OTHER below for the one value that also
+// drives a notes requirement).
+export const REFUND_REASONS = ['Service not done','Service cancelled','Wrong quantity charged','Other']
+export const REFUND_REASON_OTHER = REFUND_REASONS[REFUND_REASONS.length - 1]
+
+// Return = the item physically comes back. Kept as its own list (distinct
+// from REFUND_REASONS) since the two flows no longer share a reason domain.
+export const RETURN_REASONS = ['Defective product','Wrong item delivered','Customer changed mind','Item not as described','Duplicate purchase','Other']
+
+// Single source of truth for the refund/return window shown in both pages'
+// policy modals, subtitles, and days-left badges — so they can never drift
+// apart. The server-side enforcement lives in create_refund/create_return
+// (see supabase/*.sql) and is intentionally not driven by this constant;
+// keep them in sync by hand if this ever changes.
+export const SALE_ADJUSTMENT_DAYS = 7
+
+// Sum of this transaction's refund.total across non-excluded refunds —
+// refunds are money-only now (no item/qty breakdown), so "how much has
+// already been refunded" is just a sum of amounts, not item quantities.
+export function refundSettledAmount(txnId, refunds, { approvedOnly = true, excludeIds = [] } = {}) {
+  return refunds
+    .filter(r => r.transactionId === txnId && !excludeIds.includes(r.id) && (approvedOnly ? r.status === 'Approved' : r.status !== 'Rejected'))
+    .reduce((s, r) => s + (r.total || 0), 0)
+}
+
+// Same idea for the money-back slice of this transaction's returns (Cash
+// refund / GCash refund — a Replacement return pays nothing back, see
+// isMoneyBack in salesMetrics.js, so it's excluded here).
+export function moneyBackReturnSettledAmount(txnId, returns, { approvedOnly = true } = {}) {
+  return returns
+    .filter(r => r.transactionId === txnId && isMoneyBack(r.method) && (approvedOnly ? r.status === 'Approved' : r.status !== 'Rejected'))
+    .reduce((s, r) => s + (r.total || 0), 0)
+}
+
+export function totalSettledAmount(txnId, refunds, returns, opts) {
+  return refundSettledAmount(txnId, refunds, opts) + moneyBackReturnSettledAmount(txnId, returns, opts)
+}
 
 // Categories now live in the `categories` table (see useCategoryStore) so admins can
 // add/remove them from the UI. This is just the picker palette for a new category's badge.

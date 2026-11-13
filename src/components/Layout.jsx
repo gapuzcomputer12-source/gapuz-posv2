@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { Pencil } from 'lucide-react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { useAuthStore, useAppStore, useProductStore, useCustomerStore, useTransactionStore, useRefundStore, useHoldStore, useCategoryStore, useStaffStore, useActivityLogStore } from '../store'
+import { useAuthStore, useAppStore, useProductStore, useCustomerStore, useTransactionStore, useRefundStore, useReturnStore, useHoldStore, useCategoryStore, useStaffStore, useActivityLogStore } from '../store'
 import { useT, useBreakpoint, passwordError } from '../utils/helpers'
 import { useToast } from '../utils/toast'
+import Modal from './Modal'
 
 const SidebarIcon = ({ children }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -25,6 +26,7 @@ const NAV = [
   { section: 'Finance', items:[
     { to:'/reports',   key:'reports',   icon: <SidebarIcon><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></SidebarIcon>, adminOnly:true },
     { to:'/refunds',   key:'refunds',   icon: <SidebarIcon><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></SidebarIcon> },
+    { to:'/returns',   key:'returns',   icon: <SidebarIcon><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/></SidebarIcon> },
   ]},
 ]
 
@@ -93,10 +95,25 @@ export default function Layout() {
     useCustomerStore.getState().fetchCustomers()
     useTransactionStore.getState().fetchTransactions()
     useRefundStore.getState().fetchRefunds()
+    useReturnStore.getState().fetchReturns()
     useHoldStore.getState().fetchHolds()
     useCategoryStore.getState().fetchCategories()
     useStaffStore.getState().fetchStaff()
     useActivityLogStore.getState().fetchLogs()
+  },[])
+
+  // No realtime subscription exists in this app yet, so a cashier sitting on
+  // the Refunds/Returns page while an admin rejects their request remotely
+  // wouldn't otherwise see it — refetch both lists whenever the window
+  // regains focus (switching back from another tab/app) so the rejection
+  // and its reason show up without a manual reload.
+  useEffect(()=>{
+    const onFocus = () => {
+      useRefundStore.getState().fetchRefunds()
+      useReturnStore.getState().fetchReturns()
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
   },[])
 
   const userName = user?.user_metadata?.name || user?.email?.split('@')[0] || 'User'
@@ -231,8 +248,8 @@ export default function Layout() {
             <span style={{ fontSize:16, fontWeight:700, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
               {t(currentItem?.key||'pos')}
             </span>
-            {role==='admin' && !isMobile && (
-              <span className="badge badge-accent" style={{ fontSize:10 }}>Admin</span>
+            {!isMobile && (
+              <span className="badge badge-accent" style={{ fontSize:10 }}>{role==='admin'?'Admin':'Cashier'}</span>
             )}
           </div>
           <button onClick={toggleFullscreen} aria-label="Toggle fullscreen" style={{
@@ -320,9 +337,9 @@ export default function Layout() {
       </div>
 
       {/* Edit Profile Modal */}
-      {profileModal && (
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&setProfileModal(false)}>
-          <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:28}}>
+      {profileModal&&(
+        <Modal open onClose={()=>setProfileModal(false)} contentStyle={{width:'min(420px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:28}}>
             <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}><Pencil size={14} style={{color:'var(--blue)'}}/>{t('edit_profile')}</div>
             <div style={{display:'flex',flexDirection:'column',gap:14}}>
               <div>
@@ -355,7 +372,7 @@ export default function Layout() {
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

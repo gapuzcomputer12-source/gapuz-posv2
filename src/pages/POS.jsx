@@ -1,9 +1,11 @@
 import { useState, useRef, useCallback } from 'react'
-import { Package, PauseCircle } from 'lucide-react'
-import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppStore, useCategoryStore } from '../store'
+import { Package, PauseCircle, Barcode } from 'lucide-react'
+import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppStore, useCategoryStore, lookupSerial } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, useKeyboardShortcuts, useBreakpoint, peso, stockStatus, categoryIcon, BADGE_SWATCHES } from '../utils/helpers'
 import Cart from '../components/Cart'
+import ScanInput from '../components/ScanInput'
+import Modal from '../components/Modal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
@@ -58,7 +60,7 @@ export default function POS() {
   const CATEGORIES = ['All', ...categories.map(c=>c.name)]
   const catHex = (name) => BADGE_SWATCHES.find(s=>s.cls===(categories.find(c=>c.name===name)?.badgeColor||'badge-accent'))?.hex || '#34d399'
   const { theme }    = useAppStore()
-  const { items, addItem, clearCart, setCustomer } = useCartStore()
+  const { items, addItem, addSerialItem, restoreItems, clearCart, setCustomer } = useCartStore()
   const { holds, removeHold, saveHold } = useHoldStore()
   const holdsPg = usePagination(holds)
   const toast = useToast()
@@ -73,13 +75,52 @@ export default function POS() {
   const [category,  setCategory]  = useState('All')
   const [sortBy,    setSortBy]    = useState('')
   const [showHolds, setShowHolds] = useState(false)
+  const [serialPrompt, setSerialPrompt] = useState(null) // product awaiting a serial scan
+  const [promptScanned, setPromptScanned] = useState([])
   const searchRef = useRef()
 
+  // Validates a scanned serial against this product specifically (used both
+  // by the grid "scan serial" prompt and, implicitly, the search box below).
+  const addBySerial = useCallback(async (code, product, prefetchedRow) => {
+    const row = prefetchedRow || await lookupSerial(code)
+    if (!row) return { ok:false, message:'Serial not found' }
+    if (product && row.productId !== product.id) return { ok:false, message:'Serial belongs to a different product' }
+    if (row.status !== 'In Stock') return { ok:false, message:`Serial is ${row.status}` }
+    if (items.some(i => i.serials?.includes(code))) return { ok:false, message:'Serial already in cart' }
+    const matched = product || products.find(p => p.id === row.productId)
+    if (!matched) return { ok:false, message:'Product not found' }
+    addSerialItem(matched, code)
+    toast(`${matched.name} added (SN ${code})`,'success')
+    return { ok:true, message:'Added' }
+  },[items,products,addSerialItem,toast])
+
   const handleAdd = useCallback(product => {
+    if (product.hasSerial) { setPromptScanned([]); setSerialPrompt(product); return }
     const ok = addItem(product)
     if(ok) toast(product.name+' added','success')
     else   toast(t('out_of_stock'),'error')
   },[addItem,toast,t])
+
+  // Search-box scan handler: a matching In Stock serial wins first, then a
+  // plain barcode match, otherwise nothing was found.
+  const handleScan = useCallback(async (code) => {
+    const row = await lookupSerial(code)
+    if (row) return addBySerial(code, products.find(p=>p.id===row.productId), row)
+    const bc = products.find(p => (p.barcode||'').toLowerCase() === code.toLowerCase())
+    if (bc) {
+      if (bc.hasSerial) { setPromptScanned([]); setSerialPrompt(bc); return { ok:false, message:'Scan a serial for this product' } }
+      const ok = addItem(bc)
+      if (ok) { toast(bc.name+' added','success'); return { ok:true, message:'Added' } }
+      toast(t('out_of_stock'),'error'); return { ok:false, message:'Out of stock' }
+    }
+    return { ok:false, message:'No product or serial found' }
+  },[products,addBySerial,addItem,toast,t])
+
+  const handlePromptScan = useCallback(async (code) => {
+    const result = await addBySerial(code, serialPrompt)
+    if (result.ok) setPromptScanned(list => [...list, code])
+    return result
+  },[addBySerial,serialPrompt])
 
   const handleHold = () => {
     if(!items.length) return
@@ -88,7 +129,7 @@ export default function POS() {
   }
 
   const restoreHold = hold => {
-    hold.items.forEach(item=>addItem({...item,qty:item.qty-1}))
+    restoreItems(hold.items)
     if(hold.customerId) setCustomer(hold.customerId)
     removeHold(hold.id)
     setShowHolds(false)
@@ -110,14 +151,11 @@ export default function POS() {
       <div style={{flex:isMobile?'0 0 56%':1,minHeight:0,display:'flex',flexDirection:'column',overflow:'hidden',padding:isMobile?'12px':16,gap:12}}>
         {/* Search row */}
         <div style={{display:'flex',gap:8,flexShrink:0}}>
-          <div style={{flex:1,position:'relative'}}>
-            <div style={{position:'absolute',left:14,top:'50%',transform:'translateY(-50%)',pointerEvents:'none',display:'flex',alignItems:'center',opacity:0.6}}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8"/>
-                <path d="m21 21-4.3-4.3"/>
-              </svg>
-            </div>
-            <input ref={searchRef} className="input-field" style={{paddingLeft:40}} placeholder={t('search_product')+'  (/ to focus)'} value={search} onChange={e=>setSearch(e.target.value)}/>
+          <div style={{flex:1}}>
+            <ScanInput inputRef={searchRef} autoFocus={false} style={{gap:0}}
+              placeholder={t('search_product')+'  (/ to focus, or scan)'}
+              value={search} onChange={setSearch}
+              onScan={handleScan}/>
           </div>
           <select className="select-field" style={{width:140}} value={sortBy} onChange={e=>setSortBy(e.target.value)}>
             <option value="">Sort by…</option>
@@ -185,8 +223,8 @@ export default function POS() {
 
       {/* Holds Modal */}
       {showHolds&&(
-        <div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.85)'}} onClick={e=>e.target===e.currentTarget&&setShowHolds(false)}>
-          <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:24,maxHeight:'70vh',display:'flex',flexDirection:'column'}}>
+        <Modal open onClose={()=>setShowHolds(false)} contentStyle={{width:'min(420px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:24,maxHeight:'70vh',display:'flex',flexDirection:'column'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
               <div style={{fontWeight:700,fontSize:15,display:'flex',alignItems:'center',gap:6}}><PauseCircle size={15} style={{color:'var(--yellow)'}}/>Held Orders</div>
               <button onClick={()=>setShowHolds(false)} style={{background:'none',border:'none',color:mutedText,cursor:'pointer',fontSize:20}}>×</button>
@@ -209,7 +247,31 @@ export default function POS() {
             </div>
             <Pagination {...holdsPg}/>
           </div>
-        </div>
+        </Modal>
+      )}
+
+      {/* Scan-serial prompt — shown when a serialized product is added from the grid */}
+      {serialPrompt&&(
+        <Modal open onClose={()=>setSerialPrompt(null)} contentStyle={{width:'min(420px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:24}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:15,display:'flex',alignItems:'center',gap:6}}><Barcode size={15} style={{color:'var(--accent)'}}/>Scan Serial</div>
+                <div style={{fontSize:12,color:mutedText,marginTop:2}}>{serialPrompt.name}</div>
+              </div>
+              <button onClick={()=>setSerialPrompt(null)} style={{background:'none',border:'none',color:mutedText,cursor:'pointer',fontSize:20}}>×</button>
+            </div>
+            <ScanInput placeholder="Scan or type the unit's serial number…" onScan={handlePromptScan} clearOnScan/>
+            {promptScanned.length>0&&(
+              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:12}}>
+                {promptScanned.map(sn=>(
+                  <span key={sn} style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,padding:'4px 10px',borderRadius:99,background:'rgba(52,211,153,0.1)',border:'1px solid rgba(52,211,153,0.25)',color:'var(--accent)'}}>{sn}</span>
+                ))}
+              </div>
+            )}
+            <button onClick={()=>setSerialPrompt(null)} className="btn-primary" style={{width:'100%',marginTop:16,padding:11}}>Done{promptScanned.length>0?` — ${promptScanned.length} added`:''}</button>
+          </div>
+        </Modal>
       )}
     </div>
   )

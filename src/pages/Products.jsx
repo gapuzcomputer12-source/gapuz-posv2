@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react'
-import { Package, Plus, Pencil, AlertTriangle, TrendingUp, Tags, X, Check, Sparkles } from 'lucide-react'
+import { Package, Plus, Pencil, AlertTriangle, TrendingUp, Tags, X, Check, Sparkles, Barcode, Search } from 'lucide-react'
 import { useProductStore, useAppStore, useCategoryStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, peso, stockStatus, genBarcode, categoryIcon, resizeImage, ICON_MAP, ICON_OPTIONS, BADGE_SWATCHES } from '../utils/helpers'
 import ProductThumb from '../components/ProductThumb'
+import SerialsModal from '../components/SerialsModal'
+import FindSerialModal from '../components/FindSerialModal'
+import Modal from '../components/Modal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'' }
+const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'', hasSerial:false }
 
 // Shared by the "new category" form and each category's inline editor —
 // "Auto" (empty value) means fall back to categoryIcon()'s keyword guess.
@@ -48,6 +51,8 @@ export default function Products() {
   const [editingCatId,setEditingCatId]=useState(null)
   const [editColor,  setEditColor]  = useState(BADGE_SWATCHES[0].cls)
   const [editIcon,   setEditIcon]   = useState('')
+  const [serialsFor, setSerialsFor] = useState(null)
+  const [findSerialOpen, setFindSerialOpen] = useState(false)
   const { theme } = useAppStore()
   const toast = useToast()
   const t     = useT()
@@ -60,7 +65,7 @@ export default function Products() {
   const catBadge = (name) => categories.find(c=>c.name===name)?.badgeColor || 'badge-accent'
 
   const openAdd   = () => { setForm({...EMPTY,category:categories[0]?.name||'',barcode:genBarcode()}); setModal('add') }
-  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||''}); setSelected(p); setModal('edit') }
+  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||'',hasSerial:!!p.hasSerial}); setSelected(p); setModal('edit') }
   const openRestock = p => { setSelected(p); setRestockQty(''); setModal('restock') }
 
   const handleFileChange = async (e) => {
@@ -78,9 +83,12 @@ export default function Products() {
     if(!form.name.trim()) return toast('Product name is required','error')
     if(!form.price) return toast('Price is required','error')
     if(!form.costPrice) return toast('Cost price is required','error')
-    if(!form.stock||parseInt(form.stock)<=0) return toast('Stock must be greater than 0','error')
+    // Serialized products never take a manual stock number — it's derived
+    // from how many serials are registered, via the Serials panel instead.
+    if(!form.hasSerial && (!form.stock||parseInt(form.stock)<=0)) return toast('Stock must be greater than 0','error')
     const priceNum = parseFloat(form.price), costNum = parseFloat(form.costPrice)
-    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:costNum||0, stock:parseInt(form.stock)||0, barcode:form.barcode||genBarcode(), image:form.image }
+    const stockNum = form.hasSerial ? (modal==='edit' ? selected.stock : 0) : (parseInt(form.stock)||0)
+    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:costNum||0, stock:stockNum, barcode:form.barcode||genBarcode(), image:form.image, hasSerial:form.hasSerial }
     if(costNum>priceNum){
       const lossPct = (((costNum-priceNum)/priceNum)*100).toFixed(1)
       setLossConfirm({ data, lossPct })
@@ -151,19 +159,9 @@ export default function Products() {
   const lowCount   = products.filter(p=>p.stock>0&&p.stock<=3).length
 
   return (
-    <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:20,gap:16}}>
+    <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:'12px 20px 20px',gap:16}}>
       <div className="page-header">
-        <div>
-          <div className="page-title" style={{display:'flex',alignItems:'center',gap:10}}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
-              <path d="m3.3 7 8.7 5 8.7-5"/>
-              <path d="M12 22V12"/>
-            </svg>
-            {t('products')}
-          </div>
-          <div style={{fontSize:12,color:mutedText,marginTop:2}}>{t('showing')} {filtered.length} {t('of')} {products.length}</div>
-        </div>
+        <div style={{fontSize:12,color:mutedText}}>{t('showing')} {filtered.length} {t('of')} {products.length}</div>
         <button onClick={openAdd} className="btn-primary">+ {t('add_product')}</button>
       </div>
 
@@ -182,6 +180,7 @@ export default function Products() {
           <option value="name">Name A–Z</option><option value="price-asc">Price ↑</option><option value="price-desc">Price ↓</option><option value="stock">Stock</option><option value="sold">Best Selling</option>
         </select>
         <button onClick={()=>{catPg.setPage(1);setEditingCatId(null);setModal('categories')}} className="btn-secondary" style={{fontSize:12,display:'flex',alignItems:'center',gap:6}}><Tags size={14}/>Categories</button>
+        <button onClick={()=>setFindSerialOpen(true)} className="btn-secondary" style={{fontSize:12,display:'flex',alignItems:'center',gap:6}}><Search size={14}/>Find Serial</button>
       </div>
       <div style={{flex:1,overflowY:'auto'}}>
         <div className="tbl-wrap">
@@ -218,7 +217,7 @@ export default function Products() {
                       )
                     })()}
                   </td>
-                  <td><div style={{fontWeight:600,fontSize:13,color:'var(--text)'}}>{p.name}</div><div style={{fontSize:11.5,color:'var(--text2)',fontFamily:"'JetBrains Mono',monospace",marginTop:2}}>{p.barcode}</div></td>
+                  <td><div style={{fontWeight:600,fontSize:13,color:'var(--text)',display:'flex',alignItems:'center',gap:6}}>{p.name}{p.hasSerial&&<span title="Tracked by serial number" style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:99,background:'rgba(52,211,153,0.1)',border:'1px solid rgba(52,211,153,0.25)',color:'var(--accent)'}}>SN</span>}</div><div style={{fontSize:11.5,color:'var(--text2)',fontFamily:"'JetBrains Mono',monospace",marginTop:2}}>{p.barcode}</div></td>
                   <td><span className={`badge ${catBadge(p.category)}`} style={{fontSize:10}}>{p.category}</span></td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:bodyText,fontWeight:600}}>{peso(p.price)}</td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:bodyText}}>{p.costPrice?peso(p.costPrice):'—'}</td>
@@ -243,7 +242,9 @@ export default function Products() {
                   </td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:mutedText}}>{p.sold||0}</td>
                   <td><div style={{display:'flex',gap:5}}>
-                    <button onClick={()=>openRestock(p)} className="btn-success" style={{fontSize:10,padding:'4px 8px'}}>+Stock</button>
+                    {p.hasSerial
+                      ? <button onClick={()=>setSerialsFor(p)} className="btn-success" style={{fontSize:10,padding:'4px 8px',display:'flex',alignItems:'center',gap:4}}><Barcode size={11}/>Serials</button>
+                      : <button onClick={()=>openRestock(p)} className="btn-success" style={{fontSize:10,padding:'4px 8px'}}>+Stock</button>}
                     <button onClick={()=>openEdit(p)} className="btn-secondary" style={{fontSize:10,padding:'4px 8px'}}>{t('edit')}</button>
                     <button onClick={()=>handleDelete(p)} className="btn-danger" style={{fontSize:10,padding:'4px 8px'}}>{t('delete')}</button>
                   </div></td>
@@ -255,8 +256,8 @@ export default function Products() {
       </div>
       <Pagination {...pg}/>
       {(modal==='add'||modal==='edit')&&(
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&setModal(null)}>
-          <div className="card animate-scale-in" style={{width:'min(480px,92vw)',padding:28,maxHeight:'90vh',overflowY:'auto'}}>
+        <Modal open onClose={()=>setModal(null)} contentStyle={{width:'min(480px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:28,maxHeight:'90vh',overflowY:'auto'}}>
             <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}>{modal==='add'?<><Plus size={14} style={{color:'var(--green)'}}/>{t('add_product')}</>:<><Pencil size={14} style={{color:'var(--blue)'}}/>{t('edit_product')}</>}</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:14}}>
               <div style={{gridColumn:'span 2'}}><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('product_name')} *</label><input className="input-field" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="e.g. AMD Ryzen 5 5600X"/></div>
@@ -277,10 +278,29 @@ export default function Products() {
                   <input type="file" accept="image/*" hidden onChange={handleFileChange}/>
                 </label>
               </div>
-              {[['price',t('price'),'0.00'],['costPrice',t('cost_price'),'0.00'],['stock',t('stock'),'0']].map(([key,label,ph])=>(
+              {[['price',t('price'),'0.00'],['costPrice',t('cost_price'),'0.00']].map(([key,label,ph])=>(
                 <div key={key}><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{label} *</label><input className="input-field" type="number" min="0" value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} placeholder={ph}/></div>
               ))}
+              <div>
+                <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('stock')} *</label>
+                {form.hasSerial ? (
+                  <div className="input-field" style={{display:'flex',alignItems:'center',color:mutedText,fontSize:12}}>
+                    {modal==='edit' ? `${selected.stock} (via serials)` : 'Add serials after saving'}
+                  </div>
+                ) : (
+                  <input className="input-field" type="number" min="0" value={form.stock} onChange={e=>setForm(f=>({...f,stock:e.target.value}))} placeholder="0"/>
+                )}
+              </div>
               <div><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('barcode')}</label><div style={{display:'flex',gap:6}}><input className="input-field" value={form.barcode} onChange={e=>setForm(f=>({...f,barcode:e.target.value}))} placeholder="BC-..."/><button onClick={()=>setForm(f=>({...f,barcode:genBarcode()}))} style={{padding:'9px 10px',borderRadius:8,border:'1px solid var(--border2)',background:'var(--bg3)',color:bodyText,cursor:'pointer',fontSize:11}}>Gen</button></div></div>
+              <div style={{gridColumn:'span 2'}}>
+                <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 12px',borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)'}}>
+                  <input type="checkbox" checked={form.hasSerial} onChange={e=>setForm(f=>({...f,hasSerial:e.target.checked}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
+                  <span style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,fontWeight:600,color:'var(--text)'}}><Barcode size={13}/>Track serial numbers</span>
+                </label>
+                <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>
+                  Each physical unit is tracked by its manufacturer serial, scanned in at receiving and at checkout. Stock is then managed only through the Serials panel, sales and returns — not typed in directly.
+                </div>
+              </div>
             </div>
             {form.price&&form.costPrice&&(() => {
               const marginPct = ((parseFloat(form.price)-parseFloat(form.costPrice))/parseFloat(form.price))*100
@@ -295,11 +315,11 @@ export default function Products() {
             })()}
             <div style={{display:'flex',gap:10,marginTop:20,justifyContent:'flex-end'}}><button onClick={()=>setModal(null)} className="btn-secondary">{t('cancel')}</button><button onClick={handleSave} className="btn-primary">{t('save')}</button></div>
           </div>
-        </div>
+        </Modal>
       )}
       {modal==='restock'&&(
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&setModal(null)}>
-          <div className="card animate-scale-in" style={{width:'min(340px,92vw)',padding:28}}>
+        <Modal open onClose={()=>setModal(null)} contentStyle={{width:'min(340px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:28}}>
             <div style={{fontSize:15,fontWeight:700,marginBottom:8,display:'flex',alignItems:'center',gap:6}}><Package size={14} style={{color:'var(--blue)'}}/>{t('add_stock')}</div>
             <div style={{fontSize:13,color:bodyText,marginBottom:16}}>{selected?.name}</div>
             <div style={{fontSize:11,color:mutedText,marginBottom:6}}>Current stock: <strong style={{color:'var(--text)'}}>{selected?.stock}</strong></div>
@@ -307,11 +327,11 @@ export default function Products() {
             {restockQty&&parseInt(restockQty)>0&&<div style={{marginTop:8,fontSize:12,color:'var(--green)'}}>New stock: {selected.stock+parseInt(restockQty)}</div>}
             <div style={{display:'flex',gap:10,marginTop:20}}><button onClick={()=>setModal(null)} className="btn-secondary" style={{flex:1}}>{t('cancel')}</button><button onClick={handleRestock} className="btn-primary" style={{flex:1}}>{t('restock')}</button></div>
           </div>
-        </div>
+        </Modal>
       )}
       {modal==='categories'&&(
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&setModal(null)}>
-          <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:28,maxHeight:'85vh',display:'flex',flexDirection:'column'}}>
+        <Modal open onClose={()=>setModal(null)} contentStyle={{width:'min(420px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:28,maxHeight:'85vh',display:'flex',flexDirection:'column'}}>
             <div style={{fontSize:15,fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:6}}><Tags size={14} style={{color:'var(--accent)'}}/>Manage Categories</div>
 
             <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:6,marginBottom:8,minHeight:8*38}}>
@@ -367,11 +387,13 @@ export default function Products() {
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
+      {serialsFor&&<SerialsModal product={serialsFor} onClose={()=>setSerialsFor(null)}/>}
+      {findSerialOpen&&<FindSerialModal onClose={()=>setFindSerialOpen(false)}/>}
       {lossConfirm&&(
-        <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.6)'}} onClick={e=>e.target===e.currentTarget&&setLossConfirm(null)}>
-          <div className="card animate-scale-in" style={{width:'min(360px,92vw)',padding:28,textAlign:'center'}}>
+        <Modal open onClose={()=>setLossConfirm(null)} contentStyle={{width:'min(360px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:28,textAlign:'center'}}>
             <div style={{width:44,height:44,borderRadius:'50%',background:'rgba(239,68,68,0.12)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 14px',color:'var(--red)'}}><AlertTriangle size={22}/></div>
             <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>This product will sell at a loss</div>
             <div style={{fontSize:12.5,color:bodyText,lineHeight:1.5}}>The cost price is higher than the selling price — you'll lose <strong style={{color:'var(--red)'}}>{lossConfirm.lossPct}%</strong> per unit sold. Save it anyway?</div>
@@ -380,7 +402,7 @@ export default function Products() {
               <button onClick={()=>saveProduct(lossConfirm.data)} className="btn-primary" style={{flex:1,background:'var(--red)',borderColor:'var(--red)'}}>Save Anyway</button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

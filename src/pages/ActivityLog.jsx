@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { History, Search } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { useActivityLogStore } from '../store'
 import { useT, fmtDateTime } from '../utils/helpers'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
@@ -18,7 +18,7 @@ const ACTION_BADGE = {
   submitted:   'badge-accent',
 }
 
-const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund' }
+const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund', serial: 'Serial', return: 'Return' }
 
 function Spinner({ size = 14, color = 'currentColor' }) {
   return (
@@ -46,18 +46,15 @@ export default function ActivityLog() {
     if (!d) return ''
     if (d.roleChange) return `Role: ${d.roleChange}`
     if (d.qty != null) return `+${d.qty} (now ${d.newStock})`
+    if (d.count != null) return `${d.count} serial${d.count===1?'':'s'}`
+    if (d.serialNumber) return d.serialNumber
+    if (d.reason) return `Reason: ${d.reason}`
     if (d.total != null) return `₱${Number(d.total).toLocaleString()}`
     return ''
   }
 
   return (
-    <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: 20, gap: 16 }}>
-      <div className="page-header">
-        <div className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <History size={18} style={{ color: 'var(--accent)' }} />{t('activity_log')}
-        </div>
-      </div>
-
+    <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '12px 20px 20px', gap: 16 }}>
       <div style={{ position: 'relative', maxWidth: 280, flexShrink: 0 }}>
         <div style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', display: 'flex', alignItems: 'center', opacity: 0.6 }}>
           <Search size={15} />

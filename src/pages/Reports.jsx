@@ -1,11 +1,11 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useAppStore } from '../store'
+import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAppStore } from '../store'
 import { useT, peso, pesoCompact, getTier } from '../utils/helpers'
 import { computeSalesMetrics } from '../utils/salesMetrics'
 import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import { CHART_COLORS, ACCENT, RED, YELLOW, PURPLE, SLATE } from '../utils/colors'
-import { BarChart3, Download, Trophy, TrendingDown, Archive, AlertTriangle, PackagePlus, AlertOctagon, Award, Star, ClipboardList, Clock, Package, CreditCard, Receipt } from 'lucide-react'
+import { Download, Trophy, TrendingDown, Archive, AlertTriangle, PackagePlus, AlertOctagon, Award, Star, ClipboardList, Clock, Package, CreditCard, Receipt } from 'lucide-react'
 import ProductThumb from '../components/ProductThumb'
 import SalesBreakdownCard from '../components/SalesBreakdownCard'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
@@ -66,6 +66,7 @@ export default function Reports(){
   const products     = useProductStore(s=>s.products)
   const customers    = useCustomerStore(s=>s.customers)
   const refunds      = useRefundStore(s=>s.refunds)
+  const returns      = useReturnStore(s=>s.returns)
   const { theme }     = useAppStore()
   const isLight       = theme === 'light'
   const t            = useT()
@@ -91,7 +92,7 @@ export default function Reports(){
 
   // ── SALES — Gross vs Net (see src/utils/salesMetrics.js; the same helper
   // backs Dashboard.jsx so the two pages' numbers always match) ──────────
-  const metrics   = useMemo(()=>computeSalesMetrics({ transactions, refunds, from: periodStart, to: now }),[transactions,refunds,periodStart,now])
+  const metrics   = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: periodStart, to: now }),[transactions,refunds,returns,periodStart,now])
   const salesAvg  = metrics.transactionCount?Math.round(metrics.netSales/metrics.transactionCount):0
   const salesItems= filtered.reduce((s,t)=>s+(t.items||[]).reduce((a,i)=>a+i.qty,0),0)
   const payData   = useMemo(()=>{ const map={}; filtered.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})) },[filtered])
@@ -103,17 +104,17 @@ export default function Reports(){
       const h=i+6
       const from=new Date(); from.setHours(h,0,0,0)
       const to=new Date(); to.setHours(h,59,59,999)
-      const m=computeSalesMetrics({ transactions, refunds, from, to })
-      return {label:`${h}:00`,gross:m.grossSales,net:m.netSales,refunds:m.refundTotal}
+      const m=computeSalesMetrics({ transactions, refunds, returns, from, to })
+      return {label:`${h}:00`,gross:m.grossSales,net:m.netSales,refunds:m.refundTotal+m.returnTotal}
     })
     const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
     return Array.from({length:7},(_,i)=>{
       const d=new Date(); d.setDate(d.getDate()-(6-i)); d.setHours(0,0,0,0)
       const from=new Date(d); const to=new Date(d); to.setHours(23,59,59,999)
-      const m=computeSalesMetrics({ transactions, refunds, from, to })
-      return {label:days[d.getDay()],gross:m.grossSales,net:m.netSales,refunds:m.refundTotal}
+      const m=computeSalesMetrics({ transactions, refunds, returns, from, to })
+      return {label:days[d.getDay()],gross:m.grossSales,net:m.netSales,refunds:m.refundTotal+m.returnTotal}
     })
-  },[transactions,refunds,period])
+  },[transactions,refunds,returns,period])
   const topProds  = useMemo(()=>{ const map={}; filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); return Object.values(map).sort((a,b)=>b.sold-a.sold).slice(0,5) },[filtered])
   const leastProds= useMemo(()=>{ const map={}; filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!map[i.name]) map[i.name]={name:i.name,sold:0,revenue:0}; map[i.name].sold+=i.qty; map[i.name].revenue+=i.qty*i.price })); products.forEach(p=>{ if(!map[p.name]) map[p.name]={name:p.name,sold:0,revenue:0} }); return Object.values(map).sort((a,b)=>a.sold-b.sold).slice(0,5) },[filtered,products])
 
@@ -168,6 +169,7 @@ export default function Reports(){
   const exportCSV = () => {
     const approvedDate = r => new Date(r.processedAt || r.createdAt)
     const approvedRefundsInPeriod = refunds.filter(r => r.status==='Approved' && approvedDate(r)>=periodStart && approvedDate(r)<=now)
+    const approvedReturnsInPeriod = returns.filter(r => r.status==='Approved' && approvedDate(r)>=periodStart && approvedDate(r)<=now)
 
     // Escape per RFC 4180 so names/notes containing commas or quotes can't
     // shift columns when the file is opened in Excel.
@@ -183,6 +185,7 @@ export default function Reports(){
       row('Period', period),
       row('Gross Sales', money(metrics.grossSales)),
       row('Refunds', money(metrics.refundTotal)),
+      row('Returns', money(metrics.returnTotal)),
       row('Net Sales', money(metrics.netSales)),
       row('Gross Profit', money(metrics.grossProfit)),
       row('Net Profit', money(metrics.netProfit)),
@@ -206,9 +209,10 @@ export default function Reports(){
         tx.status||'Completed'
       )),
       '',
-      row('APPROVED REFUNDS'),
+      row('APPROVED REFUNDS/RETURNS'),
       row('Type','#','Original TXN#','Approval Date','Amount'),
       ...approvedRefundsInPeriod.map(r=>row('REFUND',`#${String(r.id).padStart(4,'0')}`,`#${String(r.transactionId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),money(r.total))),
+      ...approvedReturnsInPeriod.map(r=>row('RETURN',`RTN-${String(r.id).padStart(4,'0')}`,`#${String(r.transactionId).padStart(4,'0')}`,new Date(approvedDate(r)).toLocaleString('en-PH'),money(r.total))),
     ]
 
     // Leading BOM + CRLF line endings so Excel detects UTF-8 (no mangled
@@ -238,9 +242,8 @@ export default function Reports(){
   }
 
   return(
-    <div style={{height:'100%',overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:16}}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
-        <div style={{fontSize:18,fontWeight:700,display:'flex',alignItems:'center',gap:8}}><BarChart3 size={18} style={{color:'var(--accent)'}}/>Reports</div>
+    <div style={{height:'100%',overflowY:'auto',padding:'12px 20px 20px',display:'flex',flexDirection:'column',gap:16}}>
+      <div style={{display:'flex',justifyContent:'flex-end',flexWrap:'wrap',gap:10}}>
         <button onClick={exportCSV} className="btn-success" style={{fontSize:11,padding:'7px 14px',display:'inline-flex',alignItems:'center',gap:6}}><Download size={13}/>Export CSV</button>
       </div>
 

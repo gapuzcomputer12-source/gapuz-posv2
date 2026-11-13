@@ -6,6 +6,7 @@ import { TIERS, getTier, getNextTier } from '../utils/loyalty'
 import ProductThumb from './ProductThumb'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from './Pagination'
+import Modal from './Modal'
 
 const FILTERS = ['all', 'completed', 'refunded']
 
@@ -22,15 +23,6 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
   const [filterStatus, setFilterStatus] = useState('all')
   const [expanded, setExpanded] = useState({})
   const [showTip, setShowTip] = useState(false)
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = e => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow }
-  }, [open, onClose])
 
   // Reset transient UI state whenever a different customer's history opens,
   // so filters/expanded rows from the last customer don't carry over.
@@ -83,12 +75,8 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
   ]
 
   return (
-    <div
-      role="dialog" aria-modal="true"
-      style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', padding: 16 }}
-      onClick={e => e.target === e.currentTarget && onClose()}
-    >
-      <div className="card animate-modal-in" style={{ width: 'min(720px,94vw)', maxHeight: '90vh', borderRadius: 20, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <Modal open={open} onClose={onClose} contentStyle={{ width: 'min(720px,94vw)', maxHeight: '90vh' }}>
+      <div role="dialog" aria-modal="true" className="card animate-modal-in" style={{ maxHeight: '90vh', borderRadius: 20, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
         {/* ── Sticky header ── */}
         <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0, gap: 12 }}>
@@ -325,6 +313,6 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }

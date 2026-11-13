@@ -7,7 +7,7 @@ import { peso, useT } from '../utils/helpers'
 export default function SalesBreakdownCard({ metrics, isLight, title }) {
   const navigate = useNavigate()
   const t = useT()
-  const { grossSales, refundTotal, refundCount, netSales, refundRate, grossProfit, netProfit } = metrics
+  const { grossSales, refundTotal, refundCount, returnTotal, returnCount, netSales, refundRate, grossProfit, netProfit } = metrics
 
   const rateColor = refundRate < 2 ? (isLight ? '#059669' : 'var(--accent)') : refundRate <= 5 ? (isLight ? '#d97706' : 'var(--yellow)') : 'var(--red)'
   const rateBg    = refundRate < 2 ? (isLight ? '#d1fae5' : 'rgba(52,211,153,0.12)') : refundRate <= 5 ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)'
@@ -43,6 +43,7 @@ export default function SalesBreakdownCard({ metrics, isLight, title }) {
         <Row label={t('gross_profit')} value={peso(grossProfit)} color={grossProfit >= 0 ? undefined : 'var(--red)'} />
         <div style={{ borderTop: '1px solid var(--border)' }} />
         <Row label={t('refunds')} value={`−${peso(refundTotal)}`} color="var(--red)" count={refundCount} onClick={() => navigate('/refunds?status=Approved')} />
+        <Row label={t('returns')} value={`−${peso(returnTotal)}`} color="var(--red)" count={returnCount} onClick={() => navigate('/returns?status=Approved')} />
         <div style={{ borderTop: '1px solid var(--border)' }} />
         <Row label={t('net_sales')} value={peso(netSales)} color={netColor} bold />
         <Row label={t('net_profit')} value={peso(netProfit)} color={netProfit >= 0 ? netColor : 'var(--red)'} />

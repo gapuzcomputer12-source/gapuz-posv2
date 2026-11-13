@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Users, Plus, Pencil } from 'lucide-react'
+import { Plus, Pencil } from 'lucide-react'
 import { useCustomerStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, peso, fmtDate } from '../utils/helpers'
 import { getTier } from '../utils/loyalty'
 import CustomerHistoryModal from '../components/CustomerHistoryModal'
+import Modal from '../components/Modal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
@@ -63,9 +64,8 @@ export default function Customers() {
   useEffect(()=>{ pg.setPage(1) }, [search, sortBy])
 
   return (
-    <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:20,gap:16}}>
-      <div className="page-header">
-        <div className="page-title" style={{display:'flex',alignItems:'center',gap:8}}><Users size={18} style={{color:'var(--accent)'}}/>{t('customers')}</div>
+    <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:'12px 20px 20px',gap:16}}>
+      <div className="page-header" style={{justifyContent:'flex-end'}}>
         <button onClick={openAdd} className="btn-primary">+ {t('add_customer')}</button>
       </div>
 
@@ -119,8 +119,8 @@ export default function Customers() {
 
       {/* Add/Edit Modal */}
       {(modal==='add'||modal==='edit')&&(
-        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.9)'}} onClick={e=>e.target===e.currentTarget&&setModal(null)}>
-          <div className="card animate-scale-in" style={{width:'min(420px,92vw)',padding:28}}>
+        <Modal open onClose={()=>setModal(null)} contentStyle={{width:'min(420px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:28}}>
             <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}>{modal==='add'?<><Plus size={14} style={{color:'var(--green)'}}/>{t('add_customer')}</>:<><Pencil size={14} style={{color:'var(--blue)'}}/>{t('edit_customer')}</>}</div>
             <div style={{display:'flex',flexDirection:'column',gap:14}}>
               {[['name',t('full_name'),'Juan dela Cruz','text'],['email',t('email_addr'),'juan@email.com','email'],['phone',t('phone'),'0917-123-4567','text'],['address',t('address'),'Cagayan de Oro City','text']].map(([key,label,ph,type])=>(
@@ -129,7 +129,7 @@ export default function Customers() {
             </div>
             <div style={{display:'flex',gap:10,marginTop:20,justifyContent:'flex-end'}}><button onClick={()=>setModal(null)} className="btn-secondary">{t('cancel')}</button><button onClick={handleSave} className="btn-primary">{t('save')}</button></div>
           </div>
-        </div>
+        </Modal>
       )}
 
       <CustomerHistoryModal open={modal==='history'} onClose={()=>setModal(null)} customer={selected}/>
