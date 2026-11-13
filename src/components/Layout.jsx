@@ -98,9 +98,16 @@ export default function Layout() {
     useReturnStore.getState().fetchReturns()
     useHoldStore.getState().fetchHolds()
     useCategoryStore.getState().fetchCategories()
-    useStaffStore.getState().fetchStaff()
-    useActivityLogStore.getState().fetchLogs()
-  },[])
+    // Staff accounts and the activity log are admin-only pages — RLS
+    // already blocks a cashier from reading activity_log, but `profiles`
+    // (staff) has no such restriction, so without this a cashier session
+    // would silently fetch the full staff list despite having no route to
+    // it. Keep the fetch itself admin-only too, not just the UI.
+    if (role === 'admin') {
+      useStaffStore.getState().fetchStaff()
+      useActivityLogStore.getState().fetchLogs()
+    }
+  },[role])
 
   // No realtime subscription exists in this app yet, so a cashier sitting on
   // the Refunds/Returns page while an admin rejects their request remotely

@@ -201,25 +201,23 @@ export const useAppStore = create(
   persist(
     (set, get) => ({
       theme: 'light',
-      revenueView: 'net',
       refundsLastSeenAt: null,
       toggleTheme: () => {
         const next = get().theme === 'dark' ? 'light' : 'dark'
         document.documentElement.classList.toggle('light', next === 'light')
         set({ theme: next })
       },
-      setRevenueView: (view) => set({ revenueView: view }),
       // Called when the Refunds page mounts — clears the sidebar's pending-
       // request badge by marking everything pending as of now "seen". Any
       // refund submitted after this moment still counts as new.
       markRefundsSeen: () => set({ refundsLastSeenAt: new Date().toISOString() }),
     }),
-    { name: 'gapuz-app', partialize: s => ({ theme: s.theme, revenueView: s.revenueView, refundsLastSeenAt: s.refundsLastSeenAt }) }
+    { name: 'gapuz-app', partialize: s => ({ theme: s.theme, refundsLastSeenAt: s.refundsLastSeenAt }) }
   )
 )
 
 // ── PRODUCT STORE ────────────────────────────────────────────────
-const PRODUCT_SELECT = 'id:product_id, name, category, price, costPrice:cost_price, stock, barcode, icon, image, sold, hasSerial:has_serial, createdAt:created_at, lastSoldAt:last_sold_at'
+const PRODUCT_SELECT = 'id:product_id, name, category, price, costPrice:cost_price, stock, barcode, icon, image, sold, hasSerial:has_serial, isService:is_service, isAvailable:is_available, createdAt:created_at, lastSoldAt:last_sold_at'
 
 export const useProductStore = create((set, get) => ({
   products: [],
@@ -233,7 +231,7 @@ export const useProductStore = create((set, get) => ({
   },
 
   addProduct: async (data) => {
-    const row = { name: data.name, category: data.category, price: data.price, cost_price: data.costPrice, stock: data.stock, barcode: data.barcode, icon: data.icon, image: data.image, has_serial: !!data.hasSerial }
+    const row = { name: data.name, category: data.category, price: data.price, cost_price: data.costPrice, stock: data.stock, barcode: data.barcode, icon: data.icon, image: data.image, has_serial: !!data.hasSerial, is_service: !!data.isService, is_available: data.isAvailable !== false }
     const { data: inserted, error } = await supabase.from('products').insert(row).select(PRODUCT_SELECT).single()
     if (error || !inserted) return null
     set(s => ({ products: [...s.products, inserted] }))
@@ -252,12 +250,14 @@ export const useProductStore = create((set, get) => ({
     if ('icon' in data) row.icon = data.icon
     if ('image' in data) row.image = data.image
     if ('hasSerial' in data) row.has_serial = !!data.hasSerial
+    if ('isService' in data) row.is_service = !!data.isService
+    if ('isAvailable' in data) row.is_available = !!data.isAvailable
     const prev = get().products.find(p => p.id === id)
     const { error } = await supabase.from('products').update(row).eq('product_id', id)
     if (!error) {
       set(s => ({ products: s.products.map(p => p.id === id ? { ...p, ...data } : p) }))
       logActivity('updated', 'product', data.name || prev?.name)
-      if ('stock' in data && prev?.stock > data.stock) {
+      if ('stock' in data && prev?.stock > data.stock && !data.isService && !prev?.isService) {
         const alertProduct = { name: data.name || prev?.name, category: data.category || prev?.category, barcode: data.barcode || prev?.barcode, stock: data.stock }
         if (data.stock === 0) notifyLowStock(alertProduct, 'out')
         else if (data.stock <= 3) notifyLowStock(alertProduct, 'low')
@@ -513,7 +513,7 @@ export const useTransactionStore = create((set, get) => ({
     set({ loading: true })
     const { data, error } = await supabase
       .from('transactions')
-      .select(`${TXN_SELECT}, items:transaction_items(id:product_id, name, price, qty, costPrice:cost_price)`)
+      .select(`${TXN_SELECT}, items:transaction_items(id:product_id, name, price, qty, costPrice:cost_price, notes)`)
       .order('created_at', { ascending: false })
     if (!error) set({ transactions: data, loading: false })
     else set({ loading: false })
@@ -534,7 +534,7 @@ export const useTransactionStore = create((set, get) => ({
     }
     const { data: inserted, error } = await supabase.from('transactions').insert(row).select(TXN_SELECT).single()
     if (error || !inserted) return null
-    const itemRows = txn.items.map(i => ({ transaction_id: inserted.id, product_id: i.id, name: i.name, qty: i.qty, price: i.price, cost_price: i.costPrice || 0 }))
+    const itemRows = txn.items.map(i => ({ transaction_id: inserted.id, product_id: i.id, name: i.name, qty: i.qty, price: i.price, cost_price: i.costPrice || 0, notes: i.notes || null }))
     await supabase.from('transaction_items').insert(itemRows)
     const full = { ...inserted, items: txn.items }
     set(s => ({ transactions: [full, ...s.transactions] }))
@@ -550,7 +550,7 @@ export const useTransactionStore = create((set, get) => ({
 }))
 
 // ── REFUND STORE ─────────────────────────────────────────────────
-const REFUND_SELECT = 'id:refund_id, transactionId:transaction_id, customerName:customer_name, reason, refundMethod:refund_method, notes, total, status, processedBy:processed_by, rejectionReason:rejection_reason, items, subtotal, vat, createdAt:created_at, processedAt:processed_at'
+const REFUND_SELECT = 'id:refund_id, transactionId:transaction_id, customerName:customer_name, reason, refundMethod:refund_method, notes, total, status, processedBy:processed_by, submittedBy:submitted_by, rejectionReason:rejection_reason, items, subtotal, vat, createdAt:created_at, processedAt:processed_at'
 
 export const useRefundStore = create((set, get) => ({
   refunds: [],
@@ -660,10 +660,14 @@ export async function findSaleForReturn(query) {
     .maybeSingle()
   if (txnErr || !txn) return null
 
+  // Services never go through Returns (they can't be physically returned —
+  // see Refunds for the money-only path), so they're dropped here before
+  // the wizard ever sees them, rather than filtered out of its UI later.
   const { data: items } = await supabase
     .from('transaction_items')
-    .select('itemId:item_id, productId:product_id, name, price, qty, costPrice:cost_price')
+    .select('itemId:item_id, productId:product_id, name, price, qty, costPrice:cost_price, product:products(isService:is_service)')
     .eq('transaction_id', txnId)
+  const returnableItems = (items || []).filter(i => !i.product?.isService)
   const { data: serialRows } = await supabase
     .from('product_serials')
     .select('serialNumber:serial_number, status, transactionItemId:transaction_item_id')
@@ -671,13 +675,16 @@ export async function findSaleForReturn(query) {
 
   return {
     ...txn,
-    items: (items || []).map(i => ({ ...i, serials: (serialRows || []).filter(s => s.transactionItemId === i.itemId) })),
+    items: returnableItems.map(i => ({
+      itemId: i.itemId, productId: i.productId, name: i.name, price: i.price, qty: i.qty, costPrice: i.costPrice,
+      serials: (serialRows || []).filter(s => s.transactionItemId === i.itemId),
+    })),
   }
 }
 
 // ── RETURN STORE (returned items — physically come back; see Refunds for
 // the money-only flow) ────────────────────────────────────────────
-const RETURN_SELECT = 'id:return_id, transactionId:transaction_id, customerName:customer_name, reason, method, notes, subtotal, vat, total, status, processedBy:processed_by, rejectionReason:rejection_reason, items, conditions, evidencePhotos:evidence_photos, createdAt:created_at, processedAt:processed_at'
+const RETURN_SELECT = 'id:return_id, transactionId:transaction_id, customerName:customer_name, reason, method, notes, subtotal, vat, total, status, processedBy:processed_by, submittedBy:submitted_by, rejectionReason:rejection_reason, items, conditions, evidencePhotos:evidence_photos, createdAt:created_at, processedAt:processed_at'
 
 const EVIDENCE_BUCKET = 'return-evidence'
 
@@ -805,12 +812,15 @@ export const useCartStore = create((set, get) => ({
   split2Pay: 'GCash',
   split1Amt: '',
 
+  // Services have no stock to run out of — unlimited add, capped at 99
+  // like any other quantity field rather than gated by product.stock.
   addItem: (product) => {
-    if (product.stock === 0) return false
+    const max = product.isService ? 99 : product.stock
+    if (!product.isService && product.stock === 0) return false
     set(s => {
       const ex = s.items.find(i => i.id===product.id)
       if (ex) {
-        if (ex.qty >= product.stock) return s
+        if (ex.qty >= max) return s
         return { items: s.items.map(i => i.id===product.id ? {...i,qty:i.qty+1} : i) }
       }
       return { items: [...s.items, {...product, qty:1}] }
@@ -819,6 +829,10 @@ export const useCartStore = create((set, get) => ({
   },
   removeItem: (id) => set(s => ({ items: s.items.filter(i => i.id!==id) })),
   setQty: (id, qty, max) => set(s => ({ items: s.items.map(i => i.id===id ? {...i,qty:Math.max(1,Math.min(qty,max))} : i) })),
+  // Per-line job note for a service item ("Acer laptop – reformat + Windows
+  // 11"), saved to transaction_items.notes on checkout and printed on the
+  // receipt. Not applicable to physical products.
+  setItemNote: (id, note) => set(s => ({ items: s.items.map(i => i.id===id ? {...i, notes: note} : i) })),
 
   // Serialized lines: qty always equals serials.length, driven by scanning
   // rather than the +/- stepper. Adding the same product's second unit

@@ -28,6 +28,7 @@ const Receipt = forwardRef(function Receipt({ txn, role }, ref) {
               <span style={{flex:1}}>{item.name}</span><span style={{margin:'0 8px'}}>x{item.qty}</span><span>{peso(item.price*item.qty)}</span>
             </div>
             {item.serials?.length>0&&<div style={{fontSize:8.5,color:'#888',paddingLeft:4}}>SN: {item.serials.join(', ')}</div>}
+            {item.notes&&<div style={{fontSize:8.5,color:'#888',paddingLeft:4,fontStyle:'italic'}}>{item.notes}</div>}
           </div>
         ))}
       </div>

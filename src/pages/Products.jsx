@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Package, Plus, Pencil, AlertTriangle, TrendingUp, Tags, X, Check, Sparkles, Barcode, Search } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Package, Plus, Pencil, AlertTriangle, TrendingUp, Tags, X, Check, Sparkles, Barcode, Search, Wrench } from 'lucide-react'
 import { useProductStore, useAppStore, useCategoryStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, peso, stockStatus, genBarcode, categoryIcon, resizeImage, ICON_MAP, ICON_OPTIONS, BADGE_SWATCHES } from '../utils/helpers'
@@ -11,7 +12,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'', hasSerial:false }
+const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'', hasSerial:false, isService:false, isAvailable:true }
 
 // Shared by the "new category" form and each category's inline editor —
 // "Auto" (empty value) means fall back to categoryIcon()'s keyword guess.
@@ -37,8 +38,12 @@ export default function Products() {
   useDocumentTitle('Inventory')
   const { products, loading, addProduct, updateProduct, deleteProduct, restockProduct } = useProductStore()
   const { categories, addCategory, updateCategory, deleteCategory } = useCategoryStore()
+  const [searchParams] = useSearchParams()
   const [search,    setSearch]    = useState('')
   const [catFilter, setCatFilter] = useState('All')
+  // Lets the Dashboard's Needs Attention cards deep-link here already
+  // filtered (e.g. /products?stock=low or ?stock=out).
+  const [stockFilter, setStockFilter] = useState(() => searchParams.get('stock') || 'all')
   const [sortBy,    setSortBy]    = useState('name')
   const [modal,     setModal]     = useState(null)
   const [form,      setForm]      = useState(EMPTY)
@@ -65,7 +70,7 @@ export default function Products() {
   const catBadge = (name) => categories.find(c=>c.name===name)?.badgeColor || 'badge-accent'
 
   const openAdd   = () => { setForm({...EMPTY,category:categories[0]?.name||'',barcode:genBarcode()}); setModal('add') }
-  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||'',hasSerial:!!p.hasSerial}); setSelected(p); setModal('edit') }
+  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||'',hasSerial:!!p.hasSerial,isService:!!p.isService,isAvailable:p.isAvailable!==false}); setSelected(p); setModal('edit') }
   const openRestock = p => { setSelected(p); setRestockQty(''); setModal('restock') }
 
   const handleFileChange = async (e) => {
@@ -82,13 +87,15 @@ export default function Products() {
   const handleSave = () => {
     if(!form.name.trim()) return toast('Product name is required','error')
     if(!form.price) return toast('Price is required','error')
-    if(!form.costPrice) return toast('Cost price is required','error')
-    // Serialized products never take a manual stock number — it's derived
-    // from how many serials are registered, via the Serials panel instead.
-    if(!form.hasSerial && (!form.stock||parseInt(form.stock)<=0)) return toast('Stock must be greater than 0','error')
+    // Services have no stock-on-hand, so there's no cost-per-unit to track either.
+    if(!form.isService && !form.costPrice) return toast('Cost price is required','error')
+    // Services track no stock at all — no requirement to enter one.
+    // Serialized products never take a manual stock number either — it's
+    // derived from how many serials are registered, via the Serials panel.
+    if(!form.isService && !form.hasSerial && (!form.stock||parseInt(form.stock)<=0)) return toast('Stock must be greater than 0','error')
     const priceNum = parseFloat(form.price), costNum = parseFloat(form.costPrice)
-    const stockNum = form.hasSerial ? (modal==='edit' ? selected.stock : 0) : (parseInt(form.stock)||0)
-    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:costNum||0, stock:stockNum, barcode:form.barcode||genBarcode(), image:form.image, hasSerial:form.hasSerial }
+    const stockNum = form.isService ? 0 : form.hasSerial ? (modal==='edit' ? selected.stock : 0) : (parseInt(form.stock)||0)
+    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:form.isService?0:(costNum||0), stock:stockNum, barcode:form.barcode||genBarcode(), image:form.image, hasSerial:form.isService?false:form.hasSerial, isService:form.isService, isAvailable:form.isService?!!form.isAvailable:true }
     if(costNum>priceNum){
       const lossPct = (((costNum-priceNum)/priceNum)*100).toFixed(1)
       setLossConfirm({ data, lossPct })
@@ -146,17 +153,19 @@ export default function Products() {
   }
 
   const filtered = products
-    .filter(p=>(catFilter==='All'||p.category===catFilter)&&(!search||p.name.toLowerCase().includes(search.toLowerCase())||(p.barcode||'').toLowerCase().includes(search.toLowerCase())))
+    .filter(p=>(catFilter==='All'||p.category===catFilter)
+      && (stockFilter==='all' || (p.isService ? false : stockFilter==='low' ? (p.stock>0&&p.stock<=3) : p.stock===0))
+      && (!search||p.name.toLowerCase().includes(search.toLowerCase())||(p.barcode||'').toLowerCase().includes(search.toLowerCase())))
     .sort((a,b)=>{ if(sortBy==='name') return a.name.localeCompare(b.name); if(sortBy==='price-asc') return a.price-b.price; if(sortBy==='price-desc') return b.price-a.price; if(sortBy==='stock') return b.stock-a.stock; if(sortBy==='sold') return (b.sold||0)-(a.sold||0); return 0 })
 
   const pg = usePagination(filtered)
-  useEffect(()=>{ pg.setPage(1) }, [search, catFilter, sortBy])
+  useEffect(()=>{ pg.setPage(1) }, [search, catFilter, stockFilter, sortBy])
 
   const catPg = usePagination(categories)
 
-  const totalValue = products.reduce((s,p)=>s+p.price*p.stock,0)
-  const outCount   = products.filter(p=>p.stock===0).length
-  const lowCount   = products.filter(p=>p.stock>0&&p.stock<=3).length
+  const totalValue = products.reduce((s,p)=>s+(p.isService?0:p.price*p.stock),0)
+  const outCount   = products.filter(p=>!p.isService&&p.stock===0).length
+  const lowCount   = products.filter(p=>!p.isService&&p.stock>0&&p.stock<=3).length
 
   return (
     <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:'12px 20px 20px',gap:16}}>
@@ -176,6 +185,11 @@ export default function Products() {
           <input className="input-field" style={{paddingLeft:40, width:'100%'}} placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}/>
         </div>
         <select className="select-field" value={catFilter} onChange={e=>setCatFilter(e.target.value)}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
+        <select className="select-field" value={stockFilter} onChange={e=>setStockFilter(e.target.value)}>
+          <option value="all">All Stock</option>
+          <option value="low">Low Stock</option>
+          <option value="out">Out of Stock</option>
+        </select>
         <select className="select-field" value={sortBy} onChange={e=>setSortBy(e.target.value)}>
           <option value="name">Name A–Z</option><option value="price-asc">Price ↑</option><option value="price-desc">Price ↓</option><option value="stock">Stock</option><option value="sold">Best Selling</option>
         </select>
@@ -198,7 +212,7 @@ export default function Products() {
               :filtered.length===0?<tr><td colSpan={9} style={{textAlign:'center',padding:40,color:mutedText}}>{t('no_data')}</td></tr>
               :pg.pageItems.map(p=>{
                 const profit=p.costPrice?((p.price-p.costPrice)/p.price*100).toFixed(1):'—'
-                const ss=stockStatus(p.stock)
+                const ss=p.isService?null:stockStatus(p.stock)
                 return(<tr key={p.id}>
                   <td style={{width:56}}>
                     {p.image && (p.image.startsWith('data:') || p.image.startsWith('http')) ? (
@@ -223,26 +237,37 @@ export default function Products() {
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:bodyText}}>{p.costPrice?peso(p.costPrice):'—'}</td>
                   <td style={{fontSize:11,color:p.costPrice?'var(--green)':mutedText}}>{profit}{p.costPrice?'%':''}</td>
                   <td>
-                    <div style={{display:'flex',flexDirection:'row',alignItems:'center',gap:6}}>
-                      <span style={{display:'inline-flex',alignItems:'baseline',gap:5,width:'fit-content',padding:'3px 9px 3px 7px',borderRadius:99,background:ss.bg,border:`1px solid ${ss.border}`}}>
-                        <span style={{width:6,height:6,borderRadius:'50%',background:ss.color,flexShrink:0,alignSelf:'center'}}/>
-                        {p.stock>0&&<span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:800,color:ss.color,lineHeight:1}}>{p.stock}</span>}
-                        <span style={{fontSize:10,fontWeight:600,color:ss.color,letterSpacing:'.01em'}}>{p.stock===0?'Out of stock':p.stock<=3?'left':'in stock'}{(() => {
-                          const now = new Date()
-                          const added = p.createdAt ? new Date(p.createdAt) : null
-                          const lastSold = p.lastSoldAt ? new Date(p.lastSoldAt) : null
-                          const daysSinceAdded = added ? Math.floor((now-added)/(1000*60*60*24)) : 0
-                          const daysSinceLastSold = lastSold ? Math.floor((now-lastSold)/(1000*60*60*24)) : 999
-                          if(daysSinceAdded <= 30) return ' (New)'
-                          if(daysSinceLastSold > 90) return ' (Old)'
-                          return ''
-                        })()}</span>
-                      </span>
-                    </div>
+                    {p.isService ? (
+                      <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-start'}}>
+                        <span style={{display:'inline-flex',alignItems:'center',gap:5,padding:'3px 9px',borderRadius:99,background:'rgba(59,130,246,0.1)',border:'1px solid rgba(59,130,246,0.25)',color:'var(--blue)'}}>
+                          <Wrench size={11}/><span style={{fontSize:10,fontWeight:700,letterSpacing:'.01em'}}>Service</span>
+                        </span>
+                        {p.isAvailable===false&&<span style={{fontSize:9.5,fontWeight:600,color:mutedText}}>Unavailable</span>}
+                      </div>
+                    ) : (
+                      <div style={{display:'flex',flexDirection:'row',alignItems:'center',gap:6}}>
+                        <span style={{display:'inline-flex',alignItems:'baseline',gap:5,width:'fit-content',padding:'3px 9px 3px 7px',borderRadius:99,background:ss.bg,border:`1px solid ${ss.border}`}}>
+                          <span style={{width:6,height:6,borderRadius:'50%',background:ss.color,flexShrink:0,alignSelf:'center'}}/>
+                          {p.stock>0&&<span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:800,color:ss.color,lineHeight:1}}>{p.stock}</span>}
+                          <span style={{fontSize:10,fontWeight:600,color:ss.color,letterSpacing:'.01em'}}>{p.stock===0?'Out of stock':p.stock<=3?'left':'in stock'}{(() => {
+                            const now = new Date()
+                            const added = p.createdAt ? new Date(p.createdAt) : null
+                            const lastSold = p.lastSoldAt ? new Date(p.lastSoldAt) : null
+                            const daysSinceAdded = added ? Math.floor((now-added)/(1000*60*60*24)) : 0
+                            const daysSinceLastSold = lastSold ? Math.floor((now-lastSold)/(1000*60*60*24)) : 999
+                            if(daysSinceAdded <= 30) return ' (New)'
+                            if(daysSinceLastSold > 90) return ' (Old)'
+                            return ''
+                          })()}</span>
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:mutedText}}>{p.sold||0}</td>
                   <td><div style={{display:'flex',gap:5}}>
-                    {p.hasSerial
+                    {p.isService
+                      ? null
+                      : p.hasSerial
                       ? <button onClick={()=>setSerialsFor(p)} className="btn-success" style={{fontSize:10,padding:'4px 8px',display:'flex',alignItems:'center',gap:4}}><Barcode size={11}/>Serials</button>
                       : <button onClick={()=>openRestock(p)} className="btn-success" style={{fontSize:10,padding:'4px 8px'}}>+Stock</button>}
                     <button onClick={()=>openEdit(p)} className="btn-secondary" style={{fontSize:10,padding:'4px 8px'}}>{t('edit')}</button>
@@ -261,7 +286,7 @@ export default function Products() {
             <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}>{modal==='add'?<><Plus size={14} style={{color:'var(--green)'}}/>{t('add_product')}</>:<><Pencil size={14} style={{color:'var(--blue)'}}/>{t('edit_product')}</>}</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:14}}>
               <div style={{gridColumn:'span 2'}}><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('product_name')} *</label><input className="input-field" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="e.g. AMD Ryzen 5 5600X"/></div>
-              <div><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('category')}</label><select className="select-field" style={{width:'100%'}} value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}>{categories.map(c=><option key={c.id}>{c.name}</option>)}</select></div>
+              <div><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('category')}</label><select className="select-field" style={{width:'100%'}} value={form.category} onChange={e=>{ const val=e.target.value; setForm(f=>({...f,category:val,isService:val==='Services'?true:f.isService})) }}>{categories.map(c=><option key={c.id}>{c.name}</option>)}</select></div>
               <div>
                 <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('product_image')}</label>
                 <label style={{
@@ -278,29 +303,53 @@ export default function Products() {
                   <input type="file" accept="image/*" hidden onChange={handleFileChange}/>
                 </label>
               </div>
-              {[['price',t('price'),'0.00'],['costPrice',t('cost_price'),'0.00']].map(([key,label,ph])=>(
+              {[['price',t('price'),'0.00'],...(form.isService?[]:[['costPrice',t('cost_price'),'0.00']])].map(([key,label,ph])=>(
                 <div key={key}><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{label} *</label><input className="input-field" type="number" min="0" value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} placeholder={ph}/></div>
               ))}
-              <div>
-                <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('stock')} *</label>
-                {form.hasSerial ? (
-                  <div className="input-field" style={{display:'flex',alignItems:'center',color:mutedText,fontSize:12}}>
-                    {modal==='edit' ? `${selected.stock} (via serials)` : 'Add serials after saving'}
-                  </div>
-                ) : (
-                  <input className="input-field" type="number" min="0" value={form.stock} onChange={e=>setForm(f=>({...f,stock:e.target.value}))} placeholder="0"/>
-                )}
-              </div>
+              {!form.isService && (
+                <div>
+                  <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('stock')} *</label>
+                  {form.hasSerial ? (
+                    <div className="input-field" style={{display:'flex',alignItems:'center',color:mutedText,fontSize:12}}>
+                      {modal==='edit' ? `${selected.stock} (via serials)` : 'Add serials after saving'}
+                    </div>
+                  ) : (
+                    <input className="input-field" type="number" min="0" value={form.stock} onChange={e=>setForm(f=>({...f,stock:e.target.value}))} placeholder="0"/>
+                  )}
+                </div>
+              )}
               <div><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('barcode')}</label><div style={{display:'flex',gap:6}}><input className="input-field" value={form.barcode} onChange={e=>setForm(f=>({...f,barcode:e.target.value}))} placeholder="BC-..."/><button onClick={()=>setForm(f=>({...f,barcode:genBarcode()}))} style={{padding:'9px 10px',borderRadius:8,border:'1px solid var(--border2)',background:'var(--bg3)',color:bodyText,cursor:'pointer',fontSize:11}}>Gen</button></div></div>
               <div style={{gridColumn:'span 2'}}>
                 <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 12px',borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)'}}>
-                  <input type="checkbox" checked={form.hasSerial} onChange={e=>setForm(f=>({...f,hasSerial:e.target.checked}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
-                  <span style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,fontWeight:600,color:'var(--text)'}}><Barcode size={13}/>Track serial numbers</span>
+                  <input type="checkbox" checked={form.isService} onChange={e=>setForm(f=>({...f,isService:e.target.checked,hasSerial:e.target.checked?false:f.hasSerial}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
+                  <span style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,fontWeight:600,color:'var(--text)'}}><Wrench size={13}/>This is a service (no stock)</span>
                 </label>
                 <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>
-                  Each physical unit is tracked by its manufacturer serial, scanned in at receiving and at checkout. Stock is then managed only through the Serials panel, sales and returns — not typed in directly.
+                  Services (repairs, installs, etc.) aren't physical units — no stock count, no serial tracking, and checkout never deducts anything for them.
                 </div>
               </div>
+              {form.isService && (
+                <div style={{gridColumn:'span 2'}}>
+                  <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 12px',borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)'}}>
+                    <input type="checkbox" checked={form.isAvailable} onChange={e=>setForm(f=>({...f,isAvailable:e.target.checked}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
+                    <span style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,fontWeight:600,color:'var(--text)'}}><Check size={13}/>Available</span>
+                  </label>
+                  <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>
+                    Turn off when you're not taking bookings for this service — it's hidden from the POS grid and search until turned back on.
+                  </div>
+                </div>
+              )}
+              {!form.isService && (
+                <div style={{gridColumn:'span 2'}}>
+                  <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 12px',borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)'}}>
+                    <input type="checkbox" checked={form.hasSerial} onChange={e=>setForm(f=>({...f,hasSerial:e.target.checked}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
+                    <span style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,fontWeight:600,color:'var(--text)'}}><Barcode size={13}/>Track serial numbers</span>
+                  </label>
+                  <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>
+                    Each physical unit is tracked by its manufacturer serial, scanned in at receiving and at checkout. Stock is then managed only through the Serials panel, sales and returns — not typed in directly.
+                  </div>
+                </div>
+              )}
             </div>
             {form.price&&form.costPrice&&(() => {
               const marginPct = ((parseFloat(form.price)-parseFloat(form.costPrice))/parseFloat(form.price))*100

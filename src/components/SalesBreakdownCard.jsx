@@ -7,7 +7,7 @@ import { peso, useT } from '../utils/helpers'
 export default function SalesBreakdownCard({ metrics, isLight, title }) {
   const navigate = useNavigate()
   const t = useT()
-  const { grossSales, refundTotal, refundCount, returnTotal, returnCount, netSales, refundRate, grossProfit, netProfit } = metrics
+  const { grossSales, refundTotal, refundCount, returnTotal, returnCount, netSales, refundRate, grossProfit, netProfit, grossVat, refundedVat, netVat } = metrics
 
   const rateColor = refundRate < 2 ? (isLight ? '#059669' : 'var(--accent)') : refundRate <= 5 ? (isLight ? '#d97706' : 'var(--yellow)') : 'var(--red)'
   const rateBg    = refundRate < 2 ? (isLight ? '#d1fae5' : 'rgba(52,211,153,0.12)') : refundRate <= 5 ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)'
@@ -47,6 +47,14 @@ export default function SalesBreakdownCard({ metrics, isLight, title }) {
         <div style={{ borderTop: '1px solid var(--border)' }} />
         <Row label={t('net_sales')} value={peso(netSales)} color={netColor} bold />
         <Row label={t('net_profit')} value={peso(netProfit)} color={netProfit >= 0 ? netColor : 'var(--red)'} />
+        {grossVat != null && (
+          <>
+            <div style={{ borderTop: '1px solid var(--border)' }} />
+            <Row label={t('gross_vat')} value={peso(grossVat)} />
+            <Row label="Refunded VAT" value={`−${peso(refundedVat)}`} color="var(--red)" />
+            <Row label={t('net_vat')} value={peso(netVat)} color={netColor} bold />
+          </>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 10 }}>
           <span style={{ fontSize: 12, color: 'var(--text2)' }}>{t('refund_rate')}</span>
           <span style={{ fontSize: 10.5, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: rateBg, color: rateColor }}>

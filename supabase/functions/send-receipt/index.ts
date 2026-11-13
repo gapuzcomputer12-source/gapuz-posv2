@@ -24,7 +24,7 @@ const peso = (n: number) => `₱${(n || 0).toFixed(2)}`
 function receiptHtml(txn: any) {
   const items = (txn.items || []).map((i: any) => `
     <tr>
-      <td style="padding:5px 0;font-size:13px;color:#111">${i.name}${i.serials?.length ? `<div style="font-size:10px;color:#999;margin-top:2px">SN: ${i.serials.join(', ')}</div>` : ''}</td>
+      <td style="padding:5px 0;font-size:13px;color:#111">${i.name}${i.serials?.length ? `<div style="font-size:10px;color:#999;margin-top:2px">SN: ${i.serials.join(', ')}</div>` : ''}${i.notes ? `<div style="font-size:10px;color:#999;margin-top:2px;font-style:italic">${i.notes}</div>` : ''}</td>
       <td style="padding:5px 0;font-size:13px;color:#666;text-align:center;vertical-align:top">x${i.qty}</td>
       <td style="padding:5px 0;font-size:13px;color:#111;text-align:right;font-weight:600;vertical-align:top">${peso(i.price * i.qty)}</td>
     </tr>`).join('')

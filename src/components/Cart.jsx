@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import { useReactToPrint } from 'react-to-print'
-import { Banknote, Smartphone, CreditCard, Zap, ShoppingCart, Package, AlertTriangle, Mail, Printer, Check, PauseCircle, X } from 'lucide-react'
+import { Banknote, Smartphone, CreditCard, Zap, ShoppingCart, Package, AlertTriangle, Mail, Printer, Check, PauseCircle, X, Wrench } from 'lucide-react'
 import { useCartStore, useAuthStore, useTransactionStore, useProductStore, useCustomerStore } from '../store'
 import { supabase } from '../lib/supabaseClient'
 import { peso, fmtTxnId, useT, useBreakpoint } from '../utils/helpers'
@@ -13,7 +13,7 @@ const PAY = [{id:'Cash',label:'Cash',icon:Banknote},{id:'GCash',label:'GCash',ic
 
 export default function Cart({ products, customers, onHold }) {
   const { items, discount, payMethod, customerId, splitMode, split1Pay, split2Pay, split1Amt,
-          removeItem, removeSerialFromItem, setQty, clearCart, setDiscount, setPayMethod, setCustomer,
+          removeItem, removeSerialFromItem, setQty, setItemNote, clearCart, setDiscount, setPayMethod, setCustomer,
           setSplitMode, setSplit1Pay, setSplit2Pay, setSplit1Amt, getTotals } = useCartStore()
   const { user, role } = useAuthStore()
   const addTransaction = useTransactionStore(s=>s.addTransaction)
@@ -40,6 +40,8 @@ export default function Cart({ products, customers, onHold }) {
   const cust = customers.find(c=>c.id===customerId)
 
   const [checkingOut, setCheckingOut] = useState(false)
+  const [editingNoteId, setEditingNoteId] = useState(null)
+  const [noteDraft, setNoteDraft] = useState('')
 
   const openCheckout = () => { if(!items.length) return; setStep('method'); setCheckoutOpen(true) }
   const cancelCheckout = () => setCheckoutOpen(false)
@@ -179,20 +181,38 @@ export default function Cart({ products, customers, onHold }) {
                     </div>
                   </div>
                 ) : (
-                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:6}}>
-                      {[-1,1].map(d=>{
-                        const isMinus = d<0
-                        return (
-                          <button key={d} onClick={()=>setQty(item.id,item.qty+d,prod?.stock||99)} style={{order:isMinus?0:2,width:26,height:26,borderRadius:7,border:'1px solid var(--border2)',background:'var(--bg4)',color:'var(--text2)',cursor:'pointer',fontSize:14,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',transition:'all .12s'}} onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#0a0a0a';e.currentTarget.style.borderColor='var(--accent)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--bg4)';e.currentTarget.style.color='var(--text2)';e.currentTarget.style.borderColor='var(--border2)'}}>{isMinus?'−':'+'}</button>
-                        )
-                      })}
-                      <input type="number" min="1" max={prod?.stock||99} value={item.qty} className="qty-input"
-                        onChange={e=>{ const v=parseInt(e.target.value); setQty(item.id, isNaN(v)?1:v, prod?.stock||99) }}
-                        onFocus={e=>e.target.select()}
-                        style={{order:1,width:48,height:26,textAlign:'center',fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,border:'1px solid var(--border2)',borderRadius:7,background:'var(--bg4)',color:'var(--text)',padding:'0 2px',outline:'none',flexShrink:0}}/>
+                  <div>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:6}}>
+                        {[-1,1].map(d=>{
+                          const isMinus = d<0
+                          const max = item.isService ? 99 : (prod?.stock||99)
+                          return (
+                            <button key={d} onClick={()=>setQty(item.id,item.qty+d,max)} style={{order:isMinus?0:2,width:26,height:26,borderRadius:7,border:'1px solid var(--border2)',background:'var(--bg4)',color:'var(--text2)',cursor:'pointer',fontSize:14,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',transition:'all .12s'}} onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#0a0a0a';e.currentTarget.style.borderColor='var(--accent)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--bg4)';e.currentTarget.style.color='var(--text2)';e.currentTarget.style.borderColor='var(--border2)'}}>{isMinus?'−':'+'}</button>
+                          )
+                        })}
+                        <input type="number" min="1" max={item.isService ? 99 : (prod?.stock||99)} value={item.qty} className="qty-input"
+                          onChange={e=>{ const v=parseInt(e.target.value); const max=item.isService?99:(prod?.stock||99); setQty(item.id, isNaN(v)?1:v, max) }}
+                          onFocus={e=>e.target.select()}
+                          style={{order:1,width:48,height:26,textAlign:'center',fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,border:'1px solid var(--border2)',borderRadius:7,background:'var(--bg4)',color:'var(--text)',padding:'0 2px',outline:'none',flexShrink:0}}/>
+                      </div>
+                      <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,color:'var(--accent)'}}>{peso(item.price*item.qty)}</span>
                     </div>
-                    <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,color:'var(--accent)'}}>{peso(item.price*item.qty)}</span>
+                    {item.isService && (
+                      editingNoteId===item.id ? (
+                        <div style={{marginTop:8,display:'flex',gap:6}}>
+                          <input autoFocus className="input-field" style={{fontSize:11,padding:'6px 9px'}} maxLength={150} placeholder="e.g. Acer laptop – reformat + Windows 11" value={noteDraft} onChange={e=>setNoteDraft(e.target.value)}
+                            onKeyDown={e=>e.key==='Enter'&&(setItemNote(item.id,noteDraft.trim()),setEditingNoteId(null))}/>
+                          <button onClick={()=>{setItemNote(item.id,noteDraft.trim());setEditingNoteId(null)}} style={{padding:'6px 10px',borderRadius:7,border:'1px solid var(--border2)',background:'var(--bg4)',color:'var(--accent)',cursor:'pointer',fontSize:11,fontWeight:700}}><Check size={12}/></button>
+                        </div>
+                      ) : item.notes ? (
+                        <div onClick={()=>{setEditingNoteId(item.id);setNoteDraft(item.notes||'')}} style={{marginTop:6,fontSize:10.5,color:'var(--text2)',cursor:'pointer',display:'flex',alignItems:'flex-start',gap:5}}>
+                          <Wrench size={10} style={{marginTop:2,flexShrink:0,color:'var(--text3)'}}/><span style={{fontStyle:'italic'}}>{item.notes}</span>
+                        </div>
+                      ) : (
+                        <button onClick={()=>{setEditingNoteId(item.id);setNoteDraft('')}} style={{marginTop:6,background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:10.5,fontWeight:600,padding:0,display:'flex',alignItems:'center',gap:4}}>+ Add job note</button>
+                      )
+                    )}
                   </div>
                 )}
               </div>

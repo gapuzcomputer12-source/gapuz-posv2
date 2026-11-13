@@ -32,9 +32,12 @@ export function computeSalesMetrics({ transactions = [], refunds = [], returns =
   const approvedRefunds = refunds.filter(r => r.status === 'Approved' && inRange(approvedDate(r), from, to))
   const refundTotal = approvedRefunds.reduce((s, r) => s + (r.total || 0), 0)
   const refundCount = approvedRefunds.length
-  // Refund items carry `refundQty` (a partial qty of the original line)
-  // instead of `qty` — see Refunds.jsx.
-  const refundedProfit = approvedRefunds.reduce((s, r) => s + (r.items || []).reduce((a, i) => a + lineProfit({ ...i, qty: i.refundQty ?? i.qty }), 0), 0)
+  // Refunds are money-only now (no items/qty — see the refund audit), so
+  // there's no per-line profit to subtract. A refund's `total` is a flat
+  // VAT-inclusive peso amount that comes straight out of profit; back out
+  // the VAT portion (total / 1.12) to get the pre-VAT amount actually
+  // eating into profit.
+  const refundedProfit = approvedRefunds.reduce((s, r) => s + (r.total || 0) / 1.12, 0)
 
   // A Return's `items` are already exactly the quantities being returned
   // (no separate full-qty vs partial-qty split like Refunds), so lineProfit

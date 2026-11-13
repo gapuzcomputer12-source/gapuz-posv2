@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
-import { Package, PauseCircle, Barcode } from 'lucide-react'
+import { Package, PauseCircle, Barcode, Wrench } from 'lucide-react'
 import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppStore, useCategoryStore, lookupSerial } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, useKeyboardShortcuts, useBreakpoint, peso, stockStatus, categoryIcon, BADGE_SWATCHES } from '../utils/helpers'
@@ -11,9 +11,11 @@ import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
 function ProductCard({ product, onAdd, isLight, bodyText, catColor }) {
-  const { stock, name, image, icon, price, category } = product
-  const isOut = stock === 0
-  const isLow = stock > 0 && stock <= 3
+  const { stock, name, image, icon, price, category, isService } = product
+  // Services track no stock — never gray out, never "out of stock", always
+  // clickable; a soft badge replaces the stock pill below instead.
+  const isOut = !isService && stock === 0
+  const isLow = !isService && stock > 0 && stock <= 3
   const mutedText = isLight ? '#4b5563' : 'var(--text3)'
 
   return (
@@ -40,13 +42,20 @@ function ProductCard({ product, onAdd, isLight, bodyText, catColor }) {
       </div>
       <div style={{fontSize:12,fontWeight:600,color:'var(--text)',marginBottom:6,lineHeight:1.4,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden',minHeight:34}}>{name}</div>
       <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:700,color:bodyText}}>{peso(price)}</div>
-      <div style={{display:'inline-flex',alignItems:'baseline',gap:5,marginTop:6,padding:'3px 9px 3px 7px',borderRadius:99,
-        background:isOut?'rgba(239,68,68,0.1)':isLow?'rgba(245,158,11,0.1)':'rgba(52,211,153,0.1)',
-        border:`1px solid ${isOut?'rgba(239,68,68,0.22)':isLow?'rgba(245,158,11,0.22)':'rgba(52,211,153,0.2)'}`}}>
-        <span style={{width:6,height:6,borderRadius:'50%',background:isOut?'var(--red)':isLow?'var(--yellow)':'var(--green)',flexShrink:0,alignSelf:'center'}}/>
-        {!isOut&&<span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:800,color:isLow?'var(--yellow)':'var(--green)',lineHeight:1}}>{stock}</span>}
-        <span style={{fontSize:10,fontWeight:600,color:isOut?'var(--red)':isLow?'var(--yellow)':mutedText,letterSpacing:'.01em'}}>{isOut?'Out of stock':isLow?'left':'in stock'}</span>
-      </div>
+      {isService ? (
+        <div style={{display:'inline-flex',alignItems:'center',gap:5,marginTop:6,padding:'3px 9px',borderRadius:99,background:'rgba(59,130,246,0.1)',border:'1px solid rgba(59,130,246,0.25)'}}>
+          <Wrench size={11} color="var(--blue)"/>
+          <span style={{fontSize:10,fontWeight:700,color:'var(--blue)',letterSpacing:'.01em'}}>Service</span>
+        </div>
+      ) : (
+        <div style={{display:'inline-flex',alignItems:'baseline',gap:5,marginTop:6,padding:'3px 9px 3px 7px',borderRadius:99,
+          background:isOut?'rgba(239,68,68,0.1)':isLow?'rgba(245,158,11,0.1)':'rgba(52,211,153,0.1)',
+          border:`1px solid ${isOut?'rgba(239,68,68,0.22)':isLow?'rgba(245,158,11,0.22)':'rgba(52,211,153,0.2)'}`}}>
+          <span style={{width:6,height:6,borderRadius:'50%',background:isOut?'var(--red)':isLow?'var(--yellow)':'var(--green)',flexShrink:0,alignSelf:'center'}}/>
+          {!isOut&&<span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:800,color:isLow?'var(--yellow)':'var(--green)',lineHeight:1}}>{stock}</span>}
+          <span style={{fontSize:10,fontWeight:600,color:isOut?'var(--red)':isLow?'var(--yellow)':mutedText,letterSpacing:'.01em'}}>{isOut?'Out of stock':isLow?'left':'in stock'}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -137,7 +146,8 @@ export default function POS() {
   }
 
   const filtered = products
-    .filter(p=>(category==='All'||p.category===category)&&(!search||p.name.toLowerCase().includes(search.toLowerCase())||(p.barcode||'').toLowerCase().includes(search.toLowerCase())))
+    .filter(p=>!(p.isService&&p.isAvailable===false)
+      &&(category==='All'||p.category===category)&&(!search||p.name.toLowerCase().includes(search.toLowerCase())||(p.barcode||'').toLowerCase().includes(search.toLowerCase())))
     .sort((a,b)=>{ if(sortBy==='price-asc') return a.price-b.price; if(sortBy==='price-desc') return b.price-a.price; if(sortBy==='name') return a.name.localeCompare(b.name); if(sortBy==='stock') return b.stock-a.stock; return 0 })
 
   useKeyboardShortcuts([

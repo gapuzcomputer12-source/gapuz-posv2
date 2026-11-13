@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { differenceInCalendarDays, isToday, format } from 'date-fns'
-import { useTransactionStore, useRefundStore, useReturnStore, useAppStore } from '../store'
+import { useTransactionStore, useRefundStore, useReturnStore, useProductStore, useAppStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, peso, SALE_ADJUSTMENT_DAYS, refundSettledAmount, totalSettledAmount } from '../utils/helpers'
 import ScanInput from './ScanInput'
@@ -35,13 +35,18 @@ function isFullyRefunded(tx, refunds) {
   return refundSettledAmount(tx.id, refunds) >= tx.total
 }
 
-// Whether every item on this sale has already been returned via an
-// APPROVED return. Unrelated to refunds now — a refund no longer claims
-// specific items/products, so there is nothing to combine here; a Return
-// is blocked from double-claiming the same unit entirely server-side (see
+// Whether every RETURNABLE item on this sale has already been returned via
+// an APPROVED return. Services are excluded here too — they never go
+// through Returns (see Refunds for the money-only path), so a sale made up
+// only of services has nothing left to return and counts as fully claimed.
+// Unrelated to refunds now — a refund no longer claims specific
+// items/products, so there is nothing to combine here; a Return is blocked
+// from double-claiming the same unit entirely server-side (see
 // create_return in add_returns_table.sql).
-function isFullyReturned(tx, returns) {
-  return (tx.items || []).every(item => {
+function isFullyReturned(tx, returns, products) {
+  const returnableItems = (tx.items || []).filter(item => !products.find(p => p.id === item.id)?.isService)
+  if (returnableItems.length === 0) return true
+  return returnableItems.every(item => {
     // returns.items is stored snake_case (item_id/product_id) — the raw
     // object Returns.jsx hands to create_return, saved verbatim into the
     // JSONB column.
@@ -58,8 +63,8 @@ function isFullyReturned(tx, returns) {
 // money-back returns (create_refund's own cap, mirrored here) — a sale
 // fully settled by an approved "Cash refund" return, for instance, has
 // nothing left to refund either.
-function isFullyClaimed(tx, refunds, returns, mode) {
-  return mode === 'return' ? isFullyReturned(tx, returns) : totalSettledAmount(tx.id, refunds, returns) >= tx.total
+function isFullyClaimed(tx, refunds, returns, mode, products) {
+  return mode === 'return' ? isFullyReturned(tx, returns, products) : totalSettledAmount(tx.id, refunds, returns) >= tx.total
 }
 
 // A sale already has a Pending request outranks a settled one (it's the
@@ -94,6 +99,7 @@ export default function SaleLookup({ mode, onSaleFound }) {
   const txLoading = useTransactionStore(s => s.loading)
   const refunds = useRefundStore(s => s.refunds)
   const returns = useReturnStore(s => s.returns)
+  const products = useProductStore(s => s.products)
 
   const [query, setQuery] = useState('')
   const [looking, setLooking] = useState(false)
@@ -146,7 +152,7 @@ export default function SaleLookup({ mode, onSaleFound }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {recent.map(tx => {
               const fullyRefunded = isFullyRefunded(tx, refunds)
-              const fullyClaimed = isFullyClaimed(tx, refunds, returns, mode)
+              const fullyClaimed = isFullyClaimed(tx, refunds, returns, mode, products)
               const statusPill = getStatusPill(tx, refunds, returns, fullyRefunded)
               const daysSince = differenceInCalendarDays(new Date(), new Date(tx.createdAt))
               const daysLeft = SALE_ADJUSTMENT_DAYS - daysSince
