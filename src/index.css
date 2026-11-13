@@ -236,15 +236,179 @@
 
 @media print{
   body *{visibility:hidden!important;}
-  #receipt-printable,#receipt-printable *,#report-printable,#report-printable *{visibility:visible!important;}
+  #receipt-printable,#receipt-printable *{visibility:visible!important;}
   #receipt-printable{position:fixed!important;left:0;top:0;width:80mm;font-size:11px;color:#000!important;background:#fff!important;}
-  /* Reports page print view (src/pages/Reports.jsx) — the printable region
-     is re-shown by the rule above (which otherwise hides body *), laid out
-     from the page origin instead of wherever it sits in the normal flow.
-     .no-print elements (tab bar, filters, pagination, export/print buttons)
-     stay hidden; .print-only elements (the print header) only appear here. */
-  #report-printable{position:absolute!important;left:0;top:0;width:100%;color:#000!important;background:#fff!important;}
-  .no-print{display:none!important;}
 }
-.print-only{display:none;}
-@media print{.print-only{display:block;}}
+
+/* ════════════════════════════════════════════════════════════════
+   ANALYTICS DESIGN SYSTEM — Reports & Dashboard only.
+   These two pages render a fixed light "SaaS analytics" look regardless
+   of the app's dark/light toggle (confirmed with the user), so every
+   token here is a literal hex value instead of the themeable --bg/--text
+   custom properties used everywhere else in the app. Scope every rule
+   under .rpt-scope so nothing here leaks into POS/Products/etc.
+   ════════════════════════════════════════════════════════════════ */
+.rpt-scope{
+  --rpt-page-bg:#F6F7F9; --rpt-card-bg:#ffffff; --rpt-border:#E8EAEE;
+  --rpt-card-shadow:0 1px 2px rgba(16,24,40,.04);
+  --rpt-green:#059669; --rpt-green-hover:#047857; --rpt-green-light:#ECFDF5;
+  --rpt-red:#DC2626; --rpt-red-light:#FEF2F2;
+  --rpt-amber:#D97706; --rpt-amber-light:#FFFBEB;
+  --rpt-title:#111827; --rpt-body:#374151; --rpt-muted:#6B7280;
+  --rpt-track:#F1F3F5; --rpt-grid-line:#EEF0F3; --rpt-tick:#9CA3AF;
+  --rpt-table-head:#F9FAFB; --rpt-divider:#F1F3F5; --rpt-row-hover:#F9FAFB;
+  --skeleton-base:rgba(0,0,0,.06); --skeleton-shine:rgba(0,0,0,.13);
+  background:var(--rpt-page-bg); color:var(--rpt-body); color-scheme:light;
+  font-variant-numeric:tabular-nums;
+}
+.rpt-scope *{font-family:'Plus Jakarta Sans',system-ui,sans-serif;}
+
+.rpt-card{background:var(--rpt-card-bg);border:1px solid var(--rpt-border);border-radius:14px;box-shadow:var(--rpt-card-shadow);}
+.rpt-clickable{transition:transform .12s,box-shadow .12s;}
+.rpt-clickable:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(16,24,40,.08);}
+
+/* Toolbar */
+.rpt-toolbar{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--rpt-border);padding:10px 24px;min-height:56px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+.rpt-toolbar-tabs{flex-shrink:1;min-width:0;overflow-x:auto;scrollbar-width:none;}
+.rpt-toolbar-tabs::-webkit-scrollbar{display:none;}
+.rpt-toolbar-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;}
+@media (max-width:860px){
+  .rpt-toolbar{flex-direction:column;align-items:stretch;}
+  .rpt-toolbar-tabs{width:100%;}
+  .rpt-toolbar-right{width:100%;justify-content:space-between;margin-left:0;}
+}
+
+/* Segmented control (tabs, period, filter pills) */
+.seg-track{display:inline-flex;gap:2px;background:var(--rpt-track);border-radius:10px;padding:4px;flex-wrap:wrap;}
+.seg-btn{display:inline-flex;align-items:center;gap:6px;border:none;background:transparent;color:var(--rpt-muted);font-weight:600;font-size:13px;padding:7px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;transition:all .15s;font-family:inherit;}
+.seg-btn:hover{color:var(--rpt-title);}
+.seg-btn.active{background:#fff;color:var(--rpt-green);box-shadow:0 1px 2px rgba(16,24,40,.08);}
+.seg-sm .seg-btn{padding:5px 11px;font-size:12px;}
+.rpt-filter-chip{font-size:10.5px;font-weight:700;background:rgba(0,0,0,.06);color:var(--rpt-muted);padding:1px 7px;border-radius:99px;margin-left:6px;}
+.seg-btn.active .rpt-filter-chip{background:rgba(5,150,105,.12);color:var(--rpt-green);}
+
+/* Buttons */
+.rpt-btn-outline{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:9px;border:1px solid var(--rpt-border);background:#fff;color:var(--rpt-body);font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s;white-space:nowrap;}
+.rpt-btn-outline:hover{border-color:#D1D5DB;background:#F9FAFB;}
+.rpt-btn-icon{width:34px;height:34px;flex-shrink:0;border-radius:9px;border:1px solid var(--rpt-border);background:#fff;color:var(--rpt-body);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;}
+.rpt-btn-icon:hover{border-color:#D1D5DB;background:#F9FAFB;}
+.rpt-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 16px;border-radius:9px;border:none;background:var(--rpt-green);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;transition:background .15s;white-space:nowrap;}
+.rpt-btn-primary:hover{background:var(--rpt-green-hover);}
+.rpt-input{background:#fff;border:1px solid var(--rpt-border);border-radius:8px;padding:8px 10px;font-size:13px;color:var(--rpt-body);font-family:inherit;outline:none;}
+.rpt-input:focus{border-color:var(--rpt-green);}
+
+/* Stat card — compact: icon inline with label, value below, one subtext line */
+.stat-card{padding:14px 18px;display:flex;flex-direction:column;justify-content:center;min-width:0;}
+.stat-card-top{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
+.stat-card-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.stat-card-label{font-size:12.5px;color:var(--rpt-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.stat-card-value{font-size:24px;font-weight:600;color:var(--rpt-title);line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.stat-card-value.v-red{color:var(--rpt-red);}
+.stat-card-value.v-amber{color:var(--rpt-amber);}
+.stat-card-value.v-green{color:var(--rpt-green);}
+.stat-card-sub{font-size:12px;color:var(--rpt-muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* KPI row — every card of a page in one row where it fits, stepping down
+   at explicit breakpoints so it never silently collapses just because the
+   natural minmax width still technically fits. */
+.rpt-kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;}
+@media (max-width:1280px){.rpt-kpi-row{grid-template-columns:repeat(3,1fr);}}
+@media (max-width:860px){.rpt-kpi-row{grid-template-columns:repeat(2,1fr);}}
+@media (max-width:479px){.rpt-kpi-row{grid-template-columns:1fr;}}
+
+/* 12-column layout grid */
+.rpt-grid-12{display:grid;grid-template-columns:repeat(12,1fr);gap:20px;align-items:stretch;}
+.rpt-col-4{grid-column:span 4;} .rpt-col-5{grid-column:span 5;} .rpt-col-6{grid-column:span 6;}
+.rpt-col-7{grid-column:span 7;} .rpt-col-8{grid-column:span 8;} .rpt-col-12{grid-column:span 12;}
+@media (max-width:1100px){ .rpt-grid-12>[class*="rpt-col-"]{grid-column:span 12;} }
+.rpt-demand-grid{display:grid;grid-template-columns:4fr 8fr;gap:20px;align-items:start;}
+@media (max-width:1280px){.rpt-demand-grid{grid-template-columns:1fr;}}
+
+/* Chart card */
+.chart-card{padding:20px;display:flex;flex-direction:column;min-width:0;}
+.chart-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:16px;}
+.chart-card-title{font-size:15px;font-weight:600;color:var(--rpt-title);display:flex;align-items:center;gap:7px;}
+.chart-card-subtitle{font-size:13px;color:var(--rpt-muted);margin-top:2px;}
+.chart-card-body{flex:1;min-width:0;}
+
+/* Chart tooltip */
+.chart-tooltip{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(16,24,40,.14);padding:10px 12px;font-size:12px;min-width:120px;}
+.chart-tooltip-label{color:var(--rpt-muted);font-weight:600;margin-bottom:6px;}
+.chart-tooltip-row{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:2px 0;}
+.chart-tooltip-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.chart-tooltip-name{color:var(--rpt-body);flex:1;white-space:nowrap;}
+.chart-tooltip-value{font-weight:700;color:var(--rpt-title);white-space:nowrap;}
+
+/* Ranked list (Top products, Top reasons) */
+.ranked-list{display:flex;flex-direction:column;gap:14px;}
+.ranked-row{display:flex;align-items:center;gap:10px;min-width:0;}
+.ranked-rank{font-size:12px;color:var(--rpt-muted);width:16px;flex-shrink:0;}
+.ranked-main{flex:1;min-width:0;}
+.ranked-label{font-size:13px;font-weight:500;color:var(--rpt-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px;}
+.ranked-track{height:8px;background:var(--rpt-track);border-radius:99px;overflow:hidden;}
+.ranked-fill{height:100%;border-radius:99px;transition:width .4s;}
+.ranked-value{flex-shrink:0;font-size:13px;font-weight:600;color:var(--rpt-title);white-space:nowrap;}
+
+/* Donut card */
+.donut-card{display:flex;align-items:center;gap:20px;flex-wrap:wrap;}
+.donut-chart-wrap{position:relative;flex-shrink:0;}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;text-align:center;}
+.donut-center-value{font-size:19px;font-weight:700;color:var(--rpt-title);}
+.donut-center-caption{font-size:10.5px;color:var(--rpt-muted);margin-top:2px;}
+.donut-legend{flex:1;min-width:140px;display:flex;flex-direction:column;gap:9px;}
+.donut-legend-row{display:flex;align-items:center;gap:8px;font-size:13px;}
+.donut-legend-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+.donut-legend-name{flex:1;color:var(--rpt-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.donut-legend-value{color:var(--rpt-muted);font-size:12.5px;white-space:nowrap;flex-shrink:0;}
+
+/* Simple list rows (Low Stock / Out of Stock / Slow Moving) */
+.rpt-simple-list{display:flex;flex-direction:column;}
+.rpt-simple-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--rpt-divider);}
+.rpt-simple-row:last-child{border-bottom:none;}
+.rpt-simple-name{font-size:13px;font-weight:500;color:var(--rpt-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rpt-simple-sub{font-size:11.5px;color:var(--rpt-muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* Tier tiles (Customers > Loyalty Tier Criteria) — 4 compact tiles in one
+   row instead of a tall stacked list, so the card stays ~90px tall. */
+.tier-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;}
+.tier-tile{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--rpt-table-head);border-radius:10px;min-width:0;}
+.tier-tile-icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+.tier-tile-body{flex:1;min-width:0;}
+.tier-tile-top{display:flex;justify-content:space-between;align-items:baseline;gap:6px;}
+.tier-tile-name{font-size:12.5px;font-weight:700;color:var(--rpt-title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.tier-tile-count{font-size:12px;font-weight:700;color:var(--rpt-title);flex-shrink:0;}
+.tier-tile-range{font-size:10.5px;color:var(--rpt-muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.tier-tile-track{height:4px;background:var(--rpt-track);border-radius:99px;overflow:hidden;margin-top:5px;}
+.tier-tile-fill{height:100%;border-radius:99px;}
+
+/* Tables */
+.rpt-table-wrap{background:var(--rpt-card-bg);border:1px solid var(--rpt-border);border-radius:14px;box-shadow:var(--rpt-card-shadow);overflow:hidden;}
+.rpt-table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.rpt-table{width:100%;min-width:640px;border-collapse:collapse;}
+.rpt-table thead th{position:sticky;top:0;background:var(--rpt-table-head);color:var(--rpt-muted);font-size:12px;font-weight:600;text-align:left;padding:12px 16px;white-space:nowrap;border-bottom:1px solid var(--rpt-border);}
+.rpt-table thead th.num{text-align:right;}
+.rpt-table tbody td{padding:0 16px;font-size:13.5px;color:var(--rpt-body);border-bottom:1px solid var(--rpt-divider);height:52px;vertical-align:middle;}
+.rpt-table tbody td.num{text-align:right;}
+.rpt-table tbody tr:last-child td{border-bottom:none;}
+.rpt-table tbody tr{transition:background .1s;}
+.rpt-table tbody tr:hover td{background:var(--rpt-row-hover);}
+
+/* Status / semantic pills */
+.rpt-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;font-size:11.5px;font-weight:600;white-space:nowrap;}
+.rpt-pill .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+.rpt-pill-red{background:var(--rpt-red-light);color:#B91C1C;}
+.rpt-pill-red .dot{background:var(--rpt-red);}
+.rpt-pill-amber{background:var(--rpt-amber-light);color:#92400E;}
+.rpt-pill-amber .dot{background:var(--rpt-amber);}
+.rpt-pill-green{background:var(--rpt-green-light);color:#047857;}
+.rpt-pill-green .dot{background:var(--rpt-green);}
+.rpt-pill-gray{background:#F3F4F6;color:#4B5563;}
+.rpt-pill-gray .dot{background:#9CA3AF;}
+
+/* Empty state */
+.rpt-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;height:140px;color:var(--rpt-muted);font-size:13px;text-align:center;}
+.rpt-empty svg{opacity:.35;}
+
+/* Fade-in on tab change */
+@keyframes rptFadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.rpt-tab-fade{animation:rptFadeIn .15s ease both;}

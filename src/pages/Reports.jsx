@@ -1,35 +1,40 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useReactToPrint } from 'react-to-print'
-import { startOfDay, endOfDay, subDays, startOfMonth, endOfMonth, startOfYear, eachDayOfInterval, eachMonthOfInterval, format, differenceInCalendarDays } from 'date-fns'
-import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAppStore, useAuthStore } from '../store'
-import { useT, peso, getTier, fmtDate } from '../utils/helpers'
+import { startOfDay, endOfDay, subDays, startOfMonth, endOfMonth, eachDayOfInterval, eachMonthOfInterval, format, differenceInCalendarDays } from 'date-fns'
+import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore } from '../store'
+import { useT, peso, getTier, fmtDate, refundSettledAmount } from '../utils/helpers'
 import { computeSalesMetrics, isMoneyBack } from '../utils/salesMetrics'
-import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie } from 'recharts'
-import { ACCENT, ACCENT2, GREEN, RED, BLUE, YELLOW, PURPLE, SLATE } from '../utils/colors'
-import { Download, Printer, Trophy, TrendingDown, AlertTriangle, Archive, AlertOctagon, Award, Star, ClipboardList, Ban } from 'lucide-react'
+import { addSheet, addMultiTableSheet, downloadWorkbook, createWorkbook } from '../utils/exportXlsx'
+import { ComposedChart, Area, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import {
+  Download, Trophy, TrendingDown, AlertTriangle, Archive, AlertOctagon, ClipboardList, Ban,
+  TrendingUp, Undo2, Wallet, Coins, Receipt, Calculator, Package, Layers, Tag, Clock, RotateCcw,
+  Banknote, XCircle, Users, Star, Gem, Award,
+} from 'lucide-react'
 import ProductThumb from '../components/ProductThumb'
 import SalesBreakdownCard from '../components/SalesBreakdownCard'
+import StatCard from '../components/StatCard'
+import ChartCard from '../components/ChartCard'
+import RankedList from '../components/RankedList'
+import DonutCard from '../components/DonutCard'
+import SegmentedControl from '../components/SegmentedControl'
 import { StatusBadge } from '../components/RefundDetailsModal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-const PAY_COLOR = { Cash: GREEN, GCash: BLUE, Card: YELLOW, Split: PURPLE }
-
-const TabIcon = ({ children }) => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}>
-    {children}
-  </svg>
-)
+// Payment-method colors — no blue anywhere per the design spec; Split
+// covers any combo string ("Cash+GCash") that isn't an exact method name.
+const PAY_COLOR = { Cash: '#059669', GCash: '#8B5CF6', Card: '#D97706', Split: '#64748B' }
+const paymentColor = (p) => PAY_COLOR[p] || PAY_COLOR.Split
 
 const REPORT_TABS = [
-  { id:'sales',     label:'Sales',             icon:<TabIcon><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></TabIcon> },
-  { id:'inventory', label:'Inventory',         icon:<TabIcon><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></TabIcon> },
-  { id:'returns',   label:'Returns & Refunds', icon:<TabIcon><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></TabIcon> },
-  { id:'customer',  label:'Customers',         icon:<TabIcon><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></TabIcon> },
+  { id: 'sales',     label: 'Sales',             icon: <TrendingUp size={14} /> },
+  { id: 'inventory', label: 'Inventory',         icon: <Package size={14} /> },
+  { id: 'returns',   label: 'Returns & Refunds', icon: <RotateCcw size={14} /> },
+  { id: 'customer',  label: 'Customers',         icon: <Users size={14} /> },
 ]
-const PERIODS = ['Today','This Week','This Month','This Year','Custom']
+const PERIODS = ['Today', 'This Week', 'This Month', 'This Year', 'Custom']
 
 const TAB_TITLE = {
   sales:     'Sales Report',
@@ -38,40 +43,34 @@ const TAB_TITLE = {
   customer:  'Customer Report',
 }
 
-const STATUS_RANK = { 'Reorder now':0, 'Reorder soon':1, 'OK':2, 'No demand':3 }
-const STATUS_BADGE = { 'Reorder now':'badge-red', 'Reorder soon':'badge-yellow', 'OK':'badge-green', 'No demand':'badge-gray' }
+const STATUS_RANK = { 'Reorder now': 0, 'Reorder soon': 1, 'OK': 2, 'No demand': 3 }
+const STATUS_PILL = { 'Reorder now': 'rpt-pill-red', 'Reorder soon': 'rpt-pill-amber', 'OK': 'rpt-pill-green', 'No demand': 'rpt-pill-gray' }
 
-function StatCard({label,value,color,sub}){
-  return(
-    <div className="card" style={{padding:16,borderTop:`2px solid ${color}`}}>
-      <div style={{fontSize:9.5,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>{label}</div>
-      <div style={{fontSize:20,fontWeight:700,color,fontVariantNumeric:'tabular-nums'}}>{value}</div>
-      {sub&&<div style={{fontSize:10,color:'var(--text3)',marginTop:3}}>{sub}</div>}
-    </div>
-  )
+// Completed / Returned / Refunded / Partially Returned — for the Sales >
+// Transactions export sheet only (not shown on-screen). Checks ALL-time
+// refunds/returns against this transaction, not just ones approved within
+// the currently selected report period, since a sale from today could be
+// returned next week.
+function txnStatus(tx, refunds, returns) {
+  const refundedAmt = refundSettledAmount(tx.id, refunds)
+  if (tx.total > 0 && refundedAmt >= tx.total) return 'Refunded'
+  const approvedReturnsForTx = returns.filter(r => r.transactionId === tx.id && r.status === 'Approved')
+  const totalQty = (tx.items || []).reduce((s, i) => s + (i.qty || 0), 0)
+  const returnedQty = approvedReturnsForTx.reduce((s, r) => s + (r.items || []).reduce((a, i) => a + (i.qty || 0), 0), 0)
+  if (totalQty > 0 && returnedQty >= totalQty) return 'Returned'
+  if (returnedQty > 0 || refundedAmt > 0) return 'Partially Returned'
+  return 'Completed'
 }
-
-function KpiCard({label,value,color,sub}){
-  return(
-    <div className="card kpi-card" style={{padding:16,borderTop:`2px solid ${color}`}}>
-      <div style={{fontSize:9.5,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>{label}</div>
-      <div className="kpi-card-value" style={{fontWeight:700,color,fontVariantNumeric:'tabular-nums'}}>{value}</div>
-      <div className="kpi-card-sub" style={{fontSize:10,color:'var(--text3)',marginTop:3}}>{sub}</div>
-    </div>
-  )
-}
-
-const EmptyRow = ({children}) => <div style={{color:'var(--text3)',fontSize:12,textAlign:'center',padding:32}}>{children}</div>
 
 // Builds the "Sales vs Returns & Refunds" chart buckets for whichever
-// granularity fits the selected period — hourly (Today), daily (Week/Month/
-// short Custom ranges), or monthly (This Year/long Custom ranges). Each
-// bucket re-runs the shared computeSalesMetrics so it always agrees with
-// the period total's own math.
+// granularity fits the selected period — hourly during store hours (Today),
+// daily (Week/Month/short Custom ranges), or monthly (This Year/long Custom
+// ranges). Each bucket re-runs the shared computeSalesMetrics so it always
+// agrees with the period total's own math.
 function buildBuckets(period, periodStart, periodEnd, transactions, refunds, returns) {
   if (period === 'Today') {
-    return Array.from({length:17},(_,i)=>{
-      const h=i+6
+    return Array.from({length:13},(_,i)=>{
+      const h=i+8
       const from=new Date(periodStart); from.setHours(h,0,0,0)
       const to=new Date(periodStart); to.setHours(h,59,59,999)
       const m=computeSalesMetrics({transactions,refunds,returns,from,to})
@@ -93,29 +92,13 @@ function buildBuckets(period, periodStart, periodEnd, transactions, refunds, ret
   })
 }
 
-// CSV helpers — escape per RFC 4180 so names/notes with commas or quotes
-// can't shift columns when the file is opened in Excel.
-const csvEsc = v => { const s=String(v??''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s }
-const csvRow = (...cells) => cells.map(csvEsc).join(',')
-const csvMoney = n => Number(n||0).toFixed(2)
-function downloadCSV(filename, lines) {
-  const csv = String.fromCharCode(0xFEFF) + lines.join('\r\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = filename; a.click()
-  URL.revokeObjectURL(url)
-}
-
 export default function Reports(){
   const transactions = useTransactionStore(s=>s.transactions)
   const products     = useProductStore(s=>s.products)
   const customers    = useCustomerStore(s=>s.customers)
   const refunds      = useRefundStore(s=>s.refunds)
   const returns      = useReturnStore(s=>s.returns)
-  const { theme }    = useAppStore()
   const { user }     = useAuthStore()
-  const isLight      = theme === 'light'
   const t            = useT()
   const [searchParams] = useSearchParams()
   const [activeTab,  setActiveTab]  = useState(() => searchParams.get('tab') || 'sales')
@@ -123,14 +106,31 @@ export default function Reports(){
   const [period,     setPeriod]     = useState('Today')
   const [customFrom, setCustomFrom] = useState(() => format(subDays(new Date(),6),'yyyy-MM-dd'))
   const [customTo,   setCustomTo]   = useState(() => format(new Date(),'yyyy-MM-dd'))
+  const [draftFrom,  setDraftFrom]  = useState(customFrom)
+  const [draftTo,    setDraftTo]    = useState(customTo)
+  const [customPopoverOpen, setCustomPopoverOpen] = useState(false)
+  const periodRef = useRef(null)
   const [topMetric,  setTopMetric]  = useState('qty') // 'qty' | 'revenue' — Sales tab Top/Least Selling
   const [demandStatusFilter, setDemandStatusFilter] = useState('All')
   const [historyType,   setHistoryType]   = useState('All') // All | Returns | Refunds
   const [historyStatus, setHistoryStatus] = useState('All') // All | Pending | Approved | Rejected
-  const [isPrinting, setIsPrinting] = useState(false)
-  const printRef = useRef(null)
+  const [exporting, setExporting] = useState(false)
 
   const now = new Date()
+
+  useEffect(() => {
+    if (!customPopoverOpen) return
+    const onClick = e => { if (periodRef.current && !periodRef.current.contains(e.target)) setCustomPopoverOpen(false) }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [customPopoverOpen])
+
+  const handlePeriodChange = (p) => {
+    if (p === 'Custom') { setDraftFrom(customFrom); setDraftTo(customTo); setCustomPopoverOpen(o => !o); return }
+    setCustomPopoverOpen(false)
+    setPeriod(p)
+  }
+  const applyCustomRange = () => { setCustomFrom(draftFrom); setCustomTo(draftTo); setPeriod('Custom'); setCustomPopoverOpen(false) }
 
   const { periodStart, periodEnd, periodLabel } = useMemo(() => {
     if (period === 'Custom') {
@@ -140,7 +140,9 @@ export default function Reports(){
       // in most browsers, but not all let the keyboard bypass them.
       let end = customTo ? new Date(`${customTo}T23:59:59.999`) : now
       if (end < start) end = endOfDay(start)
-      return { periodStart:start, periodEnd:end, periodLabel:`${format(start,'MMM d, yyyy')} – ${format(end,'MMM d, yyyy')}` }
+      const sameYear = start.getFullYear() === end.getFullYear()
+      const label = sameYear ? `${format(start,'MMM d')} – ${format(end,'MMM d, yyyy')}` : `${format(start,'MMM d, yyyy')} – ${format(end,'MMM d, yyyy')}`
+      return { periodStart:start, periodEnd:end, periodLabel:label }
     }
     const start = new Date()
     if(period==='Today'){ start.setHours(0,0,0,0) }
@@ -172,7 +174,6 @@ export default function Reports(){
   const metrics   = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: periodStart, to: periodEnd }),[transactions,refunds,returns,periodStart,periodEnd])
   const salesAvg  = metrics.transactionCount?Math.round(metrics.grossSales/metrics.transactionCount):0
   const payData   = useMemo(()=>{ const map={}; filtered.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})).filter(d=>d.value>0) },[filtered])
-  const payTotal  = payData.reduce((s,d)=>s+d.value,0)
   const salesChart= useMemo(()=>buildBuckets(period, periodStart, periodEnd, transactions, refunds, returns),[period,periodStart,periodEnd,transactions,refunds,returns])
   const prodMap   = useMemo(()=>{ const m={}
     filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!m[i.name]) m[i.name]={name:i.name,sold:0,revenue:0}; m[i.name].sold+=i.qty; m[i.name].revenue+=i.qty*i.price }))
@@ -186,6 +187,29 @@ export default function Reports(){
     return Object.values(all).sort((a,b)=>topBasis(a)-topBasis(b)).slice(0,5)
   },[prodMap,products,topMetric])
   const topMax = topProds[0] ? Math.max(topBasis(topProds[0]),1) : 1
+
+  // Export-only aggregates (not used by any on-screen chart/list).
+  const payMethodStats = useMemo(()=>{
+    const map={}
+    filtered.forEach(t=>{ if(!map[t.payment]) map[t.payment]={name:t.payment,count:0,value:0}; map[t.payment].count+=1; map[t.payment].value+=t.total })
+    const rows = Object.values(map).filter(d=>d.value>0)
+    const total = rows.reduce((s,d)=>s+d.value,0)
+    return rows.map(d=>({...d, pct: total?Math.round(d.value/total*1000)/10:0}))
+  },[filtered])
+  const itemsSoldRows = useMemo(()=>{
+    const map={}
+    filtered.forEach(tx=>(tx.items||[]).forEach(i=>{
+      if(!map[i.name]) map[i.name]={name:i.name,qty:0,revenue:0,cost:0}
+      map[i.name].qty+=i.qty; map[i.name].revenue+=i.qty*i.price; map[i.name].cost+=i.qty*(i.costPrice||0)
+    }))
+    return Object.values(map)
+      .map(r=>({...r, profit:r.revenue-r.cost, category: products.find(p=>p.name===r.name)?.category || '—'}))
+      .sort((a,b)=>b.revenue-a.revenue)
+  },[filtered,products])
+  const salesRetRefRows = useMemo(()=>[
+    ...returnsApproved.map(r=>({type:'Return', id:r.id, txnId:r.transactionId, date:new Date(r.processedAt||r.createdAt), reason:r.reason, amount:r.total})),
+    ...refundsApproved.map(r=>({type:'Refund', id:r.id, txnId:r.transactionId, date:new Date(r.processedAt||r.createdAt), reason:r.reason, amount:r.total})),
+  ].sort((a,b)=>b.date-a.date),[returnsApproved,refundsApproved])
 
   // ── INVENTORY ────────────────────────────────────────────────
   const stockValueCost   = useMemo(()=>products.filter(p=>!p.isService).reduce((s,p)=>s+(p.costPrice||0)*p.stock,0),[products])
@@ -229,6 +253,11 @@ export default function Reports(){
   const outStockRows = useMemo(()=>outStock.map(p=>({...p, sold30:demandMap[p.id]||0})),[outStock,demandMap])
   const lowStockPg = usePagination(lowStockRows)
   const outStockPg = usePagination(outStockRows)
+  // Export-only: Low + Out combined into one sheet with a Status column.
+  const lowOutStockRows = useMemo(()=>[
+    ...lowStockRows.map(p=>({...p, stockStatus:'Low Stock'})),
+    ...outStockRows.map(p=>({...p, stockStatus:'Out of Stock'})),
+  ],[lowStockRows,outStockRows])
 
   const slowMoving = useMemo(()=>products
     .filter(p=>!p.isService && p.stock>0 && (!p.lastSoldAt || new Date(p.lastSoldAt) < subDays(now,90)))
@@ -256,9 +285,8 @@ export default function Reports(){
   const conditionTally = useMemo(()=>{
     let resellable=0, defective=0
     returnsApproved.forEach(r=>Object.values(r.conditions||{}).forEach(c=>{ if(c.status==='Defective') defective++; else if(c.status==='Resellable') resellable++ }))
-    return [{name:'Resellable',value:resellable,color:GREEN},{name:'Defective',value:defective,color:RED}].filter(d=>d.value>0)
+    return [{name:'Resellable',value:resellable},{name:'Defective',value:defective}].filter(d=>d.value>0)
   },[returnsApproved])
-  const conditionTotal = conditionTally.reduce((s,d)=>s+d.value,0)
 
   const topReasons = useMemo(()=>{
     const map={}
@@ -306,11 +334,11 @@ export default function Reports(){
   const silverCount   = customers.filter(c=>c.points>=500&&c.points<1500).length
   const bronzeCount   = customers.filter(c=>c.points<500).length
   const tierCounts = [
-    {name:'Platinum',value:platinumCount,color:PURPLE},
-    {name:'Gold',    value:goldCount,    color:YELLOW},
-    {name:'Silver',  value:silverCount,  color:SLATE},
-    {name:'Bronze',  value:bronzeCount,  color:ACCENT},
-  ].filter(t=>t.value>0)
+    {name:'Platinum',value:platinumCount},
+    {name:'Gold',    value:goldCount},
+    {name:'Silver',  value:silverCount},
+    {name:'Bronze',  value:bronzeCount},
+  ].filter(tc=>tc.value>0)
   const topCustsPeriod = useMemo(()=>{
     const map={}
     filtered.forEach(tx=>{ if(!tx.customerId) return
@@ -321,599 +349,669 @@ export default function Reports(){
       .filter(m=>m.customer)
       .sort((a,b)=>b.amount-a.amount).slice(0,8)
   },[filtered,customers])
+  // Export-only.
+  const tierSummaryRows = [
+    {tier:'Bronze',   range:'0 – 499 pts',       count:bronzeCount},
+    {tier:'Silver',   range:'500 – 1,499 pts',   count:silverCount},
+    {tier:'Gold',     range:'1,500 – 2,999 pts', count:goldCount},
+    {tier:'Platinum', range:'3,000+ pts',        count:platinumCount},
+  ].map(tc=>({...tc, pct: customers.length?Math.round(tc.count/customers.length*1000)/10:0}))
 
-  // ── PRINT ────────────────────────────────────────────────────
-  const handlePrint = useReactToPrint({
-    content: () => printRef.current,
-    documentTitle: `gapuz-pos-${activeTab}-${fromStr}-${toStr}`,
-    onBeforeGetContent: () => new Promise(resolve => { setIsPrinting(true); setTimeout(resolve, 60) }),
-    onAfterPrint: () => setIsPrinting(false),
-  })
+  // ── EXPORT ─────────────────────────────────────────────────────
+  // Real calendar dates for export headers — periodLabel is a UI shortcut
+  // ("Today", "This Week") that doesn't belong in a downloaded file.
+  const exportPeriodLabel = `${format(periodStart,'MMM d, yyyy')} – ${format(periodEnd,'MMM d, yyyy')}`
+  const exportGeneratedLabel = `Generated: ${format(now,'MMM d, yyyy h:mm a')} by ${user?.user_metadata?.name || 'Admin'}`
 
-  // ── EXPORT CSV (tab-aware) ───────────────────────────────────
-  const exportCSV = () => {
-    const lines = []
-    const head = (name) => { lines.push(csvRow(`GAPUZ POS - ${name.toUpperCase()}`)); lines.push(csvRow('Period', periodLabel)); lines.push(csvRow('Generated', new Date().toLocaleString('en-PH'))); lines.push('') }
+  // Each builder adds the current tab's sheets to the workbook, using plain
+  // sheet names (only one tab's sheets ever end up in the file, so there's
+  // no collision to prefix against).
+  const buildSalesSheets = (wb, opts) => {
+    addMultiTableSheet(wb, { ...opts, name: 'Summary', tables: [
+      { title: 'Summary', columns: [{header:'Metric',value:r=>r.k},{header:'Value',value:r=>r.v,money:r=>r.money,percent:r=>r.percent}], rows: [
+        {k:'Gross Sales',v:metrics.grossSales,money:true},
+        {k:'Returns & Refunds',v:-(metrics.refundTotal+metrics.returnTotal),money:true},
+        {k:'Net Sales',v:metrics.netSales,money:true},
+        {k:'Gross Profit',v:metrics.grossProfit,money:true},
+        {k:'Net Profit',v:metrics.netProfit,money:true},
+        {k:'Gross VAT',v:metrics.grossVat,money:true},
+        {k:'Refunded VAT',v:-metrics.refundedVat,money:true},
+        {k:'Net VAT',v:metrics.netVat,money:true},
+        {k:'Transactions',v:metrics.transactionCount},
+        {k:'Average Sale',v:salesAvg,money:true},
+        {k:'Refund Rate',v:metrics.refundRate/100,percent:true},
+      ] },
+      { title: 'Payment Methods', columns: [
+        {header:'Method',value:r=>r.name},
+        {header:'Count',value:r=>r.count,total:true},
+        {header:'Amount',value:r=>r.value,money:true,total:true},
+        {header:'%',value:r=>r.pct/100,percent:true},
+      ], rows: payMethodStats },
+    ]})
+    addSheet(wb, { ...opts, name: 'Transactions', columns: [
+      {header:'Txn #',value:r=>`#${String(r.id).padStart(4,'0')}`},
+      {header:'Date & Time',value:r=>new Date(r.createdAt),date:true},
+      {header:'Customer',value:r=>r.customerName||'Walk-in'},
+      {header:'Cashier',value:r=>r.cashierName||'—'},
+      {header:'Items',value:r=>(r.items||[]).map(i=>`${i.name} ×${i.qty}`).join(', ')},
+      {header:'Payment',value:r=>r.payment},
+      {header:'Subtotal',value:r=>r.subtotal||r.total,money:true,total:true},
+      {header:'Discount',value:r=>r.discAmt||0,money:true,total:true},
+      {header:'VAT',value:r=>r.vat||0,money:true,total:true},
+      {header:'Total',value:r=>r.total,money:true,total:true},
+      {header:'Status',value:r=>txnStatus(r,refunds,returns)},
+    ], rows: filtered })
+    addSheet(wb, { ...opts, name: 'Items Sold', columns: [
+      {header:'Product',value:r=>r.name},
+      {header:'Category',value:r=>r.category},
+      {header:'Qty',value:r=>r.qty,total:true},
+      {header:'Revenue',value:r=>r.revenue,money:true,total:true},
+      {header:'Cost',value:r=>r.cost,money:true,total:true},
+      {header:'Profit',value:r=>r.profit,money:true,total:true},
+    ], rows: itemsSoldRows })
+    addSheet(wb, { ...opts, name: 'Returns & Refunds', columns: [
+      {header:'Type',value:r=>r.type},
+      {header:'#',value:r=>`#${String(r.id).padStart(4,'0')}`},
+      {header:'Original Txn #',value:r=>`#${String(r.txnId).padStart(4,'0')}`},
+      {header:'Approved Date',value:r=>r.date,date:true},
+      {header:'Reason',value:r=>r.reason||'—'},
+      {header:'Amount',value:r=>r.amount,money:true,total:true},
+    ], rows: salesRetRefRows })
+  }
 
-    if (activeTab === 'sales') {
-      head('Sales Report')
-      lines.push(csvRow('Metric','Value'))
-      lines.push(csvRow('Gross Sales', csvMoney(metrics.grossSales)))
-      lines.push(csvRow('Returns & Refunds', csvMoney(metrics.refundTotal+metrics.returnTotal)))
-      lines.push(csvRow('Net Sales', csvMoney(metrics.netSales)))
-      lines.push(csvRow('Gross Profit', csvMoney(metrics.grossProfit)))
-      lines.push(csvRow('Net Profit', csvMoney(metrics.netProfit)))
-      lines.push(csvRow('Gross VAT', csvMoney(metrics.grossVat)))
-      lines.push(csvRow('Refunded VAT', csvMoney(metrics.refundedVat)))
-      lines.push(csvRow('Net VAT', csvMoney(metrics.netVat)))
-      lines.push(csvRow('Transactions', metrics.transactionCount))
-      lines.push(csvRow('Average Sale', csvMoney(salesAvg)))
-      lines.push('', csvRow('TRANSACTIONS'))
-      lines.push(csvRow('TXN#','Date & Time','Customer','Items','Payment','Subtotal','VAT','Total'))
-      filtered.forEach(tx=>lines.push(csvRow(String(tx.id).padStart(4,'0'), new Date(tx.createdAt).toLocaleString('en-PH'), tx.customerName||'Walk-in', (tx.items||[]).length, tx.payment, csvMoney(tx.subtotal||tx.total), csvMoney(tx.vat||0), csvMoney(tx.total))))
-    } else if (activeTab === 'inventory') {
-      head('Inventory Report')
-      lines.push(csvRow('Metric','Value'))
-      lines.push(csvRow('Total Products', products.length))
-      lines.push(csvRow('Stock Value at Cost', csvMoney(stockValueCost)))
-      lines.push(csvRow('Stock Value at Retail', csvMoney(stockValueRetail)))
-      lines.push(csvRow('Low Stock', lowStock.length))
-      lines.push(csvRow('Out of Stock', outStock.length))
-      lines.push('', csvRow('DEMAND & RESTOCK (last 30 days)'))
-      lines.push(csvRow('Product','Category','Stock','Sold (30d)','Avg/day','Days Left','Suggested Reorder','Status'))
-      demandRows.forEach(p=>lines.push(csvRow(p.name,p.category,p.stock,p.sold30,p.avgDaily.toFixed(1),p.daysLeft===Infinity?'∞':Math.round(p.daysLeft),p.suggestedReorder,p.status)))
-      lines.push('', csvRow('SLOW-MOVING (no sale in 90+ days)'))
-      lines.push(csvRow('Product','Category','Stock','Last Sold','Tied Up'))
-      slowMoving.forEach(p=>lines.push(csvRow(p.name,p.category,p.stock,p.lastSoldAt?new Date(p.lastSoldAt).toLocaleDateString('en-PH'):'Never',csvMoney(p.tiedUp))))
-      lines.push('', csvRow('PRICING ISSUES - BELOW COST'))
-      lines.push(csvRow('Product','Cost Price','Selling Price','Loss/Unit','Sold This Period','Total Loss'))
-      belowCost.forEach(p=>lines.push(csvRow(p.name,csvMoney(p.costPrice),csvMoney(p.price),csvMoney(p.lossPerUnit),p.soldInPeriod,csvMoney(p.totalLoss))))
-      lines.push('', csvRow('LOW MARGIN (0-15%)'))
-      lines.push(csvRow('Product','Cost Price','Selling Price','Margin %','Stock'))
-      lowMargin.forEach(p=>lines.push(csvRow(p.name,csvMoney(p.costPrice),csvMoney(p.price),`${p.margin}%`,p.stock)))
-    } else if (activeTab === 'returns') {
-      head('Returns & Refunds Report')
-      lines.push(csvRow('Metric','Value'))
-      lines.push(csvRow('Pending', pendingCount))
-      lines.push(csvRow('Approved Returns (count)', returnsApproved.length))
-      lines.push(csvRow('Approved Returns (amount)', csvMoney(approvedReturnsAmt)))
-      lines.push(csvRow('Approved Refunds (count)', refundsApproved.length))
-      lines.push(csvRow('Approved Refunds (amount)', csvMoney(approvedRefundsAmt)))
-      lines.push(csvRow('Total Money Back', csvMoney(totalMoneyBack)))
-      lines.push(csvRow('Rejected', rejectedCount))
-      lines.push('', csvRow('DEFECTIVE RETURNS'))
-      lines.push(csvRow('Date','Return #','Product','Serial','Defect Note','Cost Value'))
-      defectiveRows.forEach(r=>lines.push(csvRow(new Date(r.date).toLocaleDateString('en-PH'),`#${String(r.returnId).padStart(4,'0')}`,r.product,r.serial,r.note,csvMoney(r.costValue))))
-      lines.push('', csvRow('HISTORY'))
-      lines.push(csvRow('Type','#','Txn #','Date','Customer','Amount','Status','Processed By'))
-      historyFiltered.forEach(r=>lines.push(csvRow(r.kind,`#${String(r.id).padStart(4,'0')}`,`#${String(r.txnId).padStart(4,'0')}`,new Date(r.createdAt).toLocaleString('en-PH'),r.customerName||'Walk-in',csvMoney(r.total),r.status,r.processedBy||'—')))
-    } else {
-      head('Customer Report')
-      lines.push(csvRow('Metric','Value'))
-      lines.push(csvRow('Total Customers', customers.length))
-      lines.push(csvRow('Total Points', totalPoints))
-      lines.push(csvRow('Platinum Members', platinumCount))
-      lines.push(csvRow('Gold Members', goldCount))
-      lines.push('', csvRow(`TOP CUSTOMERS — ${periodLabel}`))
-      lines.push(csvRow('Customer','Purchases (period)','Amount (period)','Tier'))
-      topCustsPeriod.forEach(m=>lines.push(csvRow(m.customer.name, m.purchases, csvMoney(m.amount), getTier(m.customer.points).label)))
+  const buildInventorySheets = (wb, opts) => {
+    addSheet(wb, { ...opts, name: 'Restock', columns: [
+      {header:'Product',value:r=>r.name},
+      {header:'Category',value:r=>r.category},
+      {header:'Stock',value:r=>r.stock,total:true},
+      {header:'Sold (30d)',value:r=>r.sold30,total:true},
+      {header:'Avg/day',value:r=>Number(r.avgDaily.toFixed(1))},
+      {header:'Days Left',value:r=>r.daysLeft===Infinity?'∞':Math.round(r.daysLeft)},
+      {header:'Suggested Reorder',value:r=>r.suggestedReorder,total:true},
+      {header:'Status',value:r=>r.status},
+    ], rows: demandRows })
+    addSheet(wb, { ...opts, name: 'Low & Out of Stock', columns: [
+      {header:'Product',value:r=>r.name},
+      {header:'Category',value:r=>r.category},
+      {header:'Stock',value:r=>r.stock,total:true},
+      {header:'Sold (30d)',value:r=>r.sold30,total:true},
+      {header:'Last Sold',value:r=>r.lastSoldAt?new Date(r.lastSoldAt):'Never',date:true},
+      {header:'Status',value:r=>r.stockStatus},
+    ], rows: lowOutStockRows })
+    addSheet(wb, { ...opts, name: 'Slow-Moving', columns: [
+      {header:'Product',value:r=>r.name},
+      {header:'Category',value:r=>r.category},
+      {header:'Stock',value:r=>r.stock,total:true},
+      {header:'Last Sold',value:r=>r.lastSoldAt?new Date(r.lastSoldAt):'Never',date:true},
+      {header:'Tied Up',value:r=>r.tiedUp,money:true,total:true},
+    ], rows: slowMoving })
+    addMultiTableSheet(wb, { ...opts, name: 'Pricing Issues', tables: [
+      { title: 'Below Cost', columns: [
+        {header:'Product',value:r=>r.name},
+        {header:'Cost Price',value:r=>r.costPrice,money:true},
+        {header:'Selling Price',value:r=>r.price,money:true},
+        {header:'Loss/Unit',value:r=>r.lossPerUnit,money:true},
+        {header:'Sold This Period',value:r=>r.soldInPeriod,total:true},
+        {header:'Total Loss',value:r=>r.totalLoss,money:true,total:true},
+      ], rows: belowCost },
+      { title: 'Low Margin (0–15%)', columns: [
+        {header:'Product',value:r=>r.name},
+        {header:'Cost Price',value:r=>r.costPrice,money:true},
+        {header:'Selling Price',value:r=>r.price,money:true},
+        {header:'Margin %',value:r=>r.margin/100,percent:true},
+        {header:'Stock',value:r=>r.stock,total:true},
+      ], rows: lowMargin },
+    ]})
+  }
+
+  const buildReturnsSheets = (wb, opts) => {
+    addSheet(wb, { ...opts, name: 'Summary', columns: [
+      {header:'Metric',value:r=>r.k},{header:'Value',value:r=>r.v,money:r=>r.money},
+    ], rows: [
+      {k:'Pending',v:pendingCount},
+      {k:'Approved Returns',v:returnsApproved.length},
+      {k:'Approved Returns Amount',v:approvedReturnsAmt,money:true},
+      {k:'Approved Refunds',v:refundsApproved.length},
+      {k:'Approved Refunds Amount',v:approvedRefundsAmt,money:true},
+      {k:'Total Money Back',v:totalMoneyBack,money:true},
+      {k:'Rejected',v:rejectedCount},
+    ]})
+    addSheet(wb, { ...opts, name: 'Defective Returns', columns: [
+      {header:'Date',value:r=>new Date(r.date),date:true},
+      {header:'Return #',value:r=>`#${String(r.returnId).padStart(4,'0')}`},
+      {header:'Product',value:r=>r.product},
+      {header:'Serial',value:r=>r.serial},
+      {header:'Defect Note',value:r=>r.note},
+      {header:'Cost Value',value:r=>r.costValue,money:true,total:true},
+    ], rows: defectiveRows })
+    addSheet(wb, { ...opts, name: 'Request History', columns: [
+      {header:'Type',value:r=>r.kind},
+      {header:'#',value:r=>`#${String(r.id).padStart(4,'0')}`},
+      {header:'Txn #',value:r=>`#${String(r.txnId).padStart(4,'0')}`},
+      {header:'Date',value:r=>new Date(r.createdAt),date:true},
+      {header:'Customer',value:r=>r.customerName||'Walk-in'},
+      {header:'Amount',value:r=>r.total,money:true,total:true},
+      {header:'Status',value:r=>r.status},
+      {header:'Processed By',value:r=>r.processedBy||'—'},
+    ], rows: historyRows })
+  }
+
+  const buildCustomerSheets = (wb, opts) => {
+    addSheet(wb, { ...opts, name: 'Top Customers', columns: [
+      {header:'Customer',value:r=>r.customer.name},
+      {header:'Tier',value:r=>getTier(r.customer.points).label},
+      {header:'Purchases',value:r=>r.purchases,total:true},
+      {header:'Amount',value:r=>r.amount,money:true,total:true},
+    ], rows: topCustsPeriod })
+    addSheet(wb, { ...opts, name: 'Tier Summary', columns: [
+      {header:'Tier',value:r=>r.tier},
+      {header:'Range',value:r=>r.range},
+      {header:'Count',value:r=>r.count,total:true},
+      {header:'% of Total',value:r=>r.pct/100,percent:true},
+    ], rows: tierSummaryRows })
+  }
+
+  // Exports just the open tab's sheets, scoped to whichever period the
+  // admin currently has selected.
+  const exportXlsx = async () => {
+    setExporting(true)
+    try {
+      const wb = await createWorkbook({ creator: 'Gapuz POS', created: now })
+      const opts = { periodLabel: exportPeriodLabel, generatedLabel: exportGeneratedLabel, reportName: TAB_TITLE[activeTab] }
+
+      if (activeTab === 'sales') buildSalesSheets(wb, opts)
+      else if (activeTab === 'inventory') buildInventorySheets(wb, opts)
+      else if (activeTab === 'returns') buildReturnsSheets(wb, opts)
+      else buildCustomerSheets(wb, opts)
+
+      await downloadWorkbook(wb, `gapuz-pos-${activeTab}-${fromStr}-to-${toStr}.xlsx`)
+    } finally {
+      setExporting(false)
     }
-
-    downloadCSV(`gapuz-pos-${activeTab}-${fromStr}-${toStr}.csv`, lines)
   }
 
   const SalesTip = ({active,payload,label}) => {
     if(!active||!payload?.length) return null
     const d = payload[0].payload
     return (
-      <div className="card" style={{padding:'10px 12px',fontSize:11.5}}>
-        <div style={{color:'var(--text3)',marginBottom:5,fontWeight:600}}>{label}</div>
-        <div style={{display:'flex',justifyContent:'space-between',gap:16}}><span>Sales</span><span style={{fontVariantNumeric:'tabular-nums'}}>{peso(d.gross)}</span></div>
-        <div style={{display:'flex',justifyContent:'space-between',gap:16,color:'var(--red)'}}><span>Returns</span><span style={{fontVariantNumeric:'tabular-nums'}}>−{peso(d.returns)}</span></div>
-        <div style={{display:'flex',justifyContent:'space-between',gap:16,fontWeight:700,borderTop:'1px solid var(--border)',paddingTop:5,marginTop:5}}><span>Net</span><span style={{fontVariantNumeric:'tabular-nums'}}>{peso(d.net)}</span></div>
+      <div className="chart-tooltip">
+        <div className="chart-tooltip-label">{label}</div>
+        <div className="chart-tooltip-row"><span className="chart-tooltip-dot" style={{background:'#059669'}}/><span className="chart-tooltip-name">Sales</span><span className="chart-tooltip-value">{peso(d.gross)}</span></div>
+        <div className="chart-tooltip-row"><span className="chart-tooltip-dot" style={{background:'#DC2626'}}/><span className="chart-tooltip-name">Returns</span><span className="chart-tooltip-value" style={{color:'var(--rpt-red)'}}>−{peso(d.returns)}</span></div>
+        <div className="chart-tooltip-row" style={{borderTop:'1px solid var(--rpt-divider)',marginTop:4,paddingTop:6}}><span className="chart-tooltip-dot" style={{background:'var(--rpt-title)'}}/><span className="chart-tooltip-name" style={{fontWeight:700,color:'var(--rpt-title)'}}>Net</span><span className="chart-tooltip-value">{peso(d.net)}</span></div>
       </div>
     )
   }
 
-  const printHeader = (
-    <div className="print-only" style={{marginBottom:20,paddingBottom:14,borderBottom:'2px solid #000'}}>
-      <div style={{fontSize:16,fontWeight:800}}>Gapuz Computer Services and Accessories</div>
-      <div style={{fontSize:13,fontWeight:700,marginTop:4}}>{TAB_TITLE[activeTab]}</div>
-      <div style={{fontSize:11,color:'#444',marginTop:4}}>Period: {periodLabel}</div>
-      <div style={{fontSize:11,color:'#444'}}>Generated: {now.toLocaleString('en-PH')} · By: {user?.user_metadata?.name || 'Admin'}</div>
-    </div>
-  )
-
   return(
-    <div style={{height:'100%',overflowY:'auto',padding:'12px 20px 20px',display:'flex',flexDirection:'column',gap:16,fontVariantNumeric:'tabular-nums'}}>
-      <div className="no-print" style={{display:'flex',justifyContent:'flex-end',flexWrap:'wrap',gap:10}}>
-        <button onClick={handlePrint} className="btn-secondary" style={{fontSize:11,padding:'7px 14px',display:'inline-flex',alignItems:'center',gap:6}}><Printer size={13}/>Print / Save PDF</button>
-        <button onClick={exportCSV} className="btn-success" style={{fontSize:11,padding:'7px 14px',display:'inline-flex',alignItems:'center',gap:6}}><Download size={13}/>Export CSV</button>
-      </div>
-
-      {/* TABS + PERIOD FILTER (shown on every tab) */}
-      <div className="no-print" style={{display:'flex',flexWrap:'wrap',gap:10,alignItems:'center',justifyContent:'space-between'}}>
-        <div style={{display:'flex',gap:6,borderBottom:'1px solid var(--border)',overflowX:'auto',flexShrink:0}}>
-          {REPORT_TABS.map(tab=>(
-            <button key={tab.id} onClick={()=>setActiveTab(tab.id)}
-              className={`tab-btn${activeTab===tab.id?' active':''}`}
-              style={{ padding:'8px 16px', fontSize:11, marginBottom: activeTab===tab.id ? '-1px' : '0' }}>
-              {tab.icon}{tab.label}
-            </button>
-          ))}
+    <div className="rpt-scope" style={{height:'100%',overflowY:'auto'}}>
+      <div className="rpt-toolbar">
+        <div className="rpt-toolbar-tabs">
+          <SegmentedControl
+            options={REPORT_TABS.map(tab=>({ value:tab.id, label:<>{tab.icon}{tab.label}</> }))}
+            value={activeTab} onChange={setActiveTab}
+          />
         </div>
-        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-          {activeTab==='inventory' && <span style={{fontSize:10.5,color:'var(--text3)',fontStyle:'italic'}}>Stock as of today</span>}
-          <span style={{fontSize:11,color:'var(--text3)'}}>Period:</span>
-          {PERIODS.map(p=>(
-            <button key={p} onClick={()=>setPeriod(p)}
-              style={{padding:'5px 12px',fontSize:11,fontWeight:600,border:`1px solid ${period===p?'var(--blue)':'var(--border)'}`,borderRadius:6,cursor:'pointer',background:period===p?'var(--blue)':'var(--bg2)',color:period===p?'#ffffff':'var(--text3)',transition:'all .15s'}}>
-              {p}
-            </button>
-          ))}
-          {period==='Custom' && (
-            <>
-              <input type="date" className="input-field" style={{width:140,padding:'5px 8px',fontSize:11}} value={customFrom} max={customTo} onChange={e=>setCustomFrom(e.target.value)}/>
-              <span style={{color:'var(--text3)',fontSize:11}}>to</span>
-              <input type="date" className="input-field" style={{width:140,padding:'5px 8px',fontSize:11}} value={customTo} min={customFrom} onChange={e=>setCustomTo(e.target.value)}/>
-            </>
-          )}
+        <div className="rpt-toolbar-right">
+          {activeTab==='inventory' && <span style={{fontSize:12,color:'var(--rpt-muted)',fontStyle:'italic'}}>Stock as of today</span>}
+          <div ref={periodRef} style={{position:'relative',display:'flex',alignItems:'center',gap:8}}>
+            <SegmentedControl size="sm" options={PERIODS.map(p=>({value:p,label:p}))} value={period} onChange={handlePeriodChange}/>
+            {period==='Custom' && <span style={{fontSize:12,color:'var(--rpt-muted)',whiteSpace:'nowrap'}}>{periodLabel}</span>}
+            {customPopoverOpen && (
+              <div className="rpt-card" style={{position:'absolute',top:'calc(100% + 8px)',right:0,padding:16,zIndex:20,width:250}}>
+                <div style={{fontSize:12,fontWeight:700,color:'var(--rpt-title)',marginBottom:10}}>Custom range</div>
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  <input type="date" className="rpt-input" value={draftFrom} max={draftTo} onChange={e=>setDraftFrom(e.target.value)}/>
+                  <input type="date" className="rpt-input" value={draftTo} min={draftFrom} onChange={e=>setDraftTo(e.target.value)}/>
+                </div>
+                <button onClick={applyCustomRange} className="rpt-btn-primary" style={{width:'100%',marginTop:12}}>Apply</button>
+              </div>
+            )}
+          </div>
+          <button onClick={exportXlsx} disabled={exporting} className="rpt-btn-outline" style={{opacity:exporting?0.6:1,cursor:exporting?'wait':'pointer'}}>
+            <Download size={14}/>{exporting?'Exporting…':'Export (.xlsx)'}
+          </button>
         </div>
       </div>
 
-      <div id="report-printable" ref={printRef}>
-        {printHeader}
+      <div style={{padding:'16px 24px 24px',display:'flex',flexDirection:'column',gap:20}}>
+        <div key={activeTab} className="rpt-tab-fade" style={{display:'flex',flexDirection:'column',gap:20}}>
 
         {/* ══════════ SALES ══════════ */}
         {activeTab==='sales' && <>
-          <div className="kpi-grid-6">
-            <KpiCard label="Gross Sales"          value={peso(metrics.grossSales)} color="var(--accent)"/>
-            <KpiCard label="Returns & Refunds"     value={`−${peso(metrics.refundTotal+metrics.returnTotal)}`} color="var(--red)" sub={`${metrics.returnCount} returns · ${metrics.refundCount} refunds`}/>
-            <KpiCard label="Net Sales"             value={peso(metrics.netSales)}   color="var(--accent)"/>
-            <KpiCard label="Net Profit"            value={peso(metrics.netProfit)} color={metrics.netProfit>=0?"var(--green)":"var(--red)"} sub={`Gross profit ${peso(metrics.grossProfit)}`}/>
-            <KpiCard label="Transactions"          value={metrics.transactionCount} color="var(--green)"/>
-            <KpiCard label="Average Sale"          value={peso(salesAvg)}           color="var(--yellow)" sub="Gross ÷ transactions"/>
+          <div className="rpt-kpi-row">
+            <StatCard icon={TrendingUp} label="Gross Sales" value={peso(metrics.grossSales)}/>
+            <StatCard icon={Undo2} label="Returns & Refunds" value={peso(-(metrics.refundTotal+metrics.returnTotal))} tone="red" sub={`${metrics.returnCount} returns · ${metrics.refundCount} refunds`}/>
+            <StatCard icon={Wallet} label="Net Sales" value={peso(metrics.netSales)}/>
+            <StatCard icon={Coins} label="Net Profit" value={peso(metrics.netProfit)} sub={`Gross profit ${peso(metrics.grossProfit)}`}/>
+            <StatCard icon={Receipt} label="Transactions" value={metrics.transactionCount}/>
+            <StatCard icon={Calculator} label="Average Sale" value={peso(salesAvg)} sub="Gross ÷ transactions"/>
           </div>
 
-          <div className="kpi-bottom-grid">
-            <div className="card" style={{padding:20}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Sales vs Returns & Refunds</div>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={salesChart} barGap={3}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false}/>
-                  <XAxis dataKey="label" tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false} interval={salesChart.length>20?Math.floor(salesChart.length/12):0}/>
-                  <YAxis tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?`₱${Math.round(v/1000)}k`:`₱${v}`}/>
-                  <Tooltip content={<SalesTip/>} cursor={{fill:'rgba(255,255,255,0.03)'}}/>
-                  <Bar dataKey="gross" name="Sales" barSize={salesChart.length>20?6:16} radius={[4,4,0,0]}>
-                    {salesChart.map((d,i)=><Cell key={i} fill={i===salesChart.length-1?ACCENT2:ACCENT}/>)}
-                  </Bar>
-                  <Bar dataKey="returns" name="Returns" barSize={salesChart.length>20?3:7} radius={[3,3,0,0]} fill={RED}/>
-                </BarChart>
-              </ResponsiveContainer>
+          <div className="rpt-grid-12">
+            <div className="rpt-col-8">
+              <ChartCard title="Sales vs Returns & Refunds" style={{height:'100%'}}>
+                {salesChart.length<2 ? (
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:260,gap:8}}>
+                    <div style={{fontSize:32,fontWeight:600,color:'var(--rpt-title)'}}>{peso(metrics.grossSales)}</div>
+                    <div style={{fontSize:13,color:'var(--rpt-muted)'}}>Not enough data for a trend yet</div>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <ComposedChart data={salesChart}>
+                      <defs>
+                        <linearGradient id="rptGrossGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#059669" stopOpacity={0.22}/>
+                          <stop offset="100%" stopColor="#059669" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="var(--rpt-grid-line)" strokeDasharray="4 4" vertical={false}/>
+                      <XAxis dataKey="label" tick={{fontSize:12,fill:'var(--rpt-tick)'}} tickLine={false} axisLine={false} interval={salesChart.length>20?Math.floor(salesChart.length/12):0}/>
+                      <YAxis tick={{fontSize:12,fill:'var(--rpt-tick)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?`₱${Math.round(v/1000)}k`:`₱${v}`}/>
+                      <Tooltip content={<SalesTip/>}/>
+                      {period==='Today' ? (
+                        <>
+                          {/* Hourly bars instead of a curved line — a smooth curve
+                              between hour buckets implies slopes that don't exist. */}
+                          <Bar dataKey="gross" name="Sales" fill="#059669" radius={[4,4,0,0]} maxBarSize={22}/>
+                          <Bar dataKey="returns" name="Returns" fill="#DC2626" radius={[4,4,0,0]} maxBarSize={12}/>
+                        </>
+                      ) : (
+                        <>
+                          <Area type="monotone" dataKey="gross" name="Sales" stroke="#059669" strokeWidth={2} fill="url(#rptGrossGradient)"/>
+                          <Line type="monotone" dataKey="returns" name="Returns" stroke="#DC2626" strokeWidth={2} dot={false}/>
+                        </>
+                      )}
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              </ChartCard>
             </div>
-            <SalesBreakdownCard metrics={metrics} isLight={isLight}/>
-          </div>
-
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(340px,1fr))',gap:14}}>
-            <div className="card" style={{padding:20}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Payment Methods</div>
-              {payData.length===0 ? <EmptyRow>No payments for this period.</EmptyRow> : <>
-                <ResponsiveContainer width="100%" height={160}>
-                  <PieChart><Pie data={payData} cx="50%" cy="50%" innerRadius={42} outerRadius={65} dataKey="value" paddingAngle={3}>{payData.map((d,i)=><Cell key={i} fill={PAY_COLOR[d.name]||SLATE}/>)}</Pie><Tooltip formatter={v=>peso(v)}/></PieChart>
-                </ResponsiveContainer>
-                <div style={{display:'flex',flexDirection:'column',gap:7,marginTop:8}}>
-                  {payData.map(d=>(
-                    <div key={d.name} style={{display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11.5}}>
-                      <span style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:99,background:PAY_COLOR[d.name]||SLATE,flexShrink:0}}/>{d.name}</span>
-                      <span style={{color:'var(--text2)'}}>{peso(d.value)} · {payTotal?Math.round(d.value/payTotal*100):0}%</span>
-                    </div>
-                  ))}
-                </div>
-              </>}
-            </div>
-          </div>
-
-          <div className="kpi-bottom-grid">
-            <div className="card" style={{padding:20}}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,gap:8,flexWrap:'wrap'}}>
-                <div style={{fontWeight:600,fontSize:13,display:'flex',alignItems:'center',gap:6}}><Trophy size={13} style={{color:'var(--yellow)'}}/>Top 5 Selling</div>
-                <div className="no-print" style={{display:'flex',background:'var(--bg3)',borderRadius:99,padding:2,gap:2}}>
-                  {['qty','revenue'].map(v=>(
-                    <button key={v} onClick={()=>setTopMetric(v)} style={{padding:'3px 10px',borderRadius:99,border:'none',fontSize:10.5,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:topMetric===v?'var(--accent)':'transparent',color:topMetric===v?'#0a0a0a':'var(--text3)'}}>{v==='qty'?'Qty':'Revenue'}</button>
-                  ))}
-                </div>
-              </div>
-              {topProds.length===0?<EmptyRow>No data.</EmptyRow>:
-                <div style={{display:'flex',flexDirection:'column',gap:10}}>
-                  {topProds.map((p,i)=>(
-                    <div key={p.name} style={{display:'flex',alignItems:'center',gap:10}}>
-                      <span style={{fontSize:11,color:'var(--text3)',width:14}}>{i+1}</span>
-                      <ProductThumb {...(products.find(pr=>pr.name===p.name)||{})} size={24} radius={6}/>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div>
-                        <div style={{marginTop:3,height:3,background:'var(--bg5)',borderRadius:2,overflow:'hidden'}}><div style={{height:'100%',borderRadius:2,background:'var(--accent)',width:`${Math.round((topBasis(p)/topMax)*100)}%`}}/></div>
-                      </div>
-                      <div style={{textAlign:'right',flexShrink:0,fontSize:11,color:'var(--green)'}}>{topMetric==='qty'?`${p.sold} sold`:peso(p.revenue)}</div>
-                    </div>
-                  ))}
-                </div>}
-            </div>
-            <div className="card" style={{padding:20,borderTop:'2px solid var(--red)'}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:12,display:'flex',alignItems:'center',gap:6}}><TrendingDown size={13} style={{color:'var(--red)'}}/>Least 5 Selling</div>
-              {leastProds.length===0?<EmptyRow>No data.</EmptyRow>:
-                <div style={{display:'flex',flexDirection:'column',gap:10}}>
-                  {leastProds.map((p,i)=>(
-                    <div key={p.name} style={{display:'flex',alignItems:'center',gap:10}}>
-                      <span style={{fontSize:11,color:'var(--red)',width:14}}>{i+1}</span>
-                      <ProductThumb {...(products.find(pr=>pr.name===p.name)||{})} size={24} radius={6}/>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div>
-                        <div style={{marginTop:3,height:3,background:'var(--bg5)',borderRadius:2,overflow:'hidden'}}><div style={{height:'100%',borderRadius:2,background:'var(--red)',width:topBasis(p)===0?'4%':`${Math.min(100,Math.round((topBasis(p)/topMax)*100))}%`}}/></div>
-                      </div>
-                      <div style={{textAlign:'right',flexShrink:0,fontSize:11,color:'var(--red)'}}>{topMetric==='qty'?`${p.sold} sold`:peso(p.revenue)}</div>
-                    </div>
-                  ))}
-                </div>}
+            <div className="rpt-col-4">
+              <SalesBreakdownCard metrics={metrics}/>
             </div>
           </div>
 
-          <div>
-            <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Transaction History ({filtered.length})</div>
-            <div className="tbl-wrap">
-              <table>
-                <thead><tr>{['TXN #','Date & Time','Customer','Items','Payment','Subtotal','VAT','Total'].map(h=><th key={h}>{h}</th>)}</tr></thead>
+          <div className="rpt-grid-12">
+            <div className="rpt-col-4">
+              <ChartCard title="Payment Methods">
+                <DonutCard data={payData.map(d=>({name:d.name,value:d.value,color:paymentColor(d.name)}))} caption="total" formatValue={peso} emptyText="No payments for this period."/>
+              </ChartCard>
+            </div>
+            <div className="rpt-col-4">
+              <ChartCard title={<><Trophy size={14} style={{color:'var(--rpt-amber)'}}/>Top 5 Selling</>}
+                actions={<SegmentedControl size="sm" options={[{value:'qty',label:'Qty'},{value:'revenue',label:'Revenue'}]} value={topMetric} onChange={setTopMetric}/>}>
+                <RankedList
+                  items={topProds.map(p=>({key:p.name,label:p.name,value:topBasis(p),_p:p}))}
+                  max={topMax}
+                  renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._p.name)||{})} size={24} radius={6}/>}
+                  renderValue={it=>topMetric==='qty'?`${it._p.sold} sold`:peso(it._p.revenue)}
+                  emptyText="No data."
+                />
+              </ChartCard>
+            </div>
+            <div className="rpt-col-4">
+              <ChartCard title={<><TrendingDown size={14} style={{color:'var(--rpt-red)'}}/>Least 5 Selling</>}>
+                <RankedList
+                  items={leastProds.map(p=>({key:p.name,label:p.name,value:topBasis(p),_p:p}))}
+                  max={topMax}
+                  barColor="var(--rpt-red)"
+                  renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._p.name)||{})} size={24} radius={6}/>}
+                  renderValue={it=>topMetric==='qty'?`${it._p.sold} sold`:peso(it._p.revenue)}
+                  emptyText="No data."
+                />
+              </ChartCard>
+            </div>
+          </div>
+
+          <ChartCard title={`Transaction History (${filtered.length})`}>
+            <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+              <table className="rpt-table">
+                <thead><tr>
+                  <th>Txn #</th><th>Date & time</th><th>Customer</th><th>Items</th><th>Payment</th>
+                  <th className="num">Subtotal</th><th className="num">VAT</th><th className="num">Total</th>
+                </tr></thead>
                 <tbody>
-                  {filtered.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--text3)'}}>No transactions for this period.</td></tr>
-                  :(isPrinting?filtered:txPg.pageItems).map(tx=>(
+                  {filtered.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--rpt-muted)'}}>No transactions for this period.</td></tr>
+                  :txPg.pageItems.map(tx=>(
                     <tr key={tx.id}>
-                      <td style={{fontSize:11,color:'var(--accent)'}}>#{String(tx.id).padStart(4,'0')}</td>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>{new Date(tx.createdAt).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-                      <td style={{fontSize:12}}>{tx.customerName||'Walk-in'}</td>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>{(tx.items||[]).length} item(s)</td>
-                      <td><span className={`badge ${tx.payment==='Cash'?'badge-green':tx.payment==='GCash'?'badge-blue':'badge-purple'}`} style={{fontSize:10}}>{tx.payment}</span></td>
-                      <td style={{fontSize:11}}>{peso(tx.subtotal||tx.total)}</td>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>{peso(tx.vat||0)}</td>
-                      <td style={{fontSize:11,color:'var(--green)',fontWeight:600}}>{peso(tx.total)}</td>
+                      <td style={{color:'var(--rpt-green)',fontWeight:600}}>#{String(tx.id).padStart(4,'0')}</td>
+                      <td style={{color:'var(--rpt-muted)'}}>{new Date(tx.createdAt).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+                      <td>{tx.customerName||'Walk-in'}</td>
+                      <td style={{color:'var(--rpt-muted)'}}>{(tx.items||[]).length} item(s)</td>
+                      <td><span className="rpt-pill rpt-pill-gray"><span className="dot" style={{background:paymentColor(tx.payment)}}/>{tx.payment}</span></td>
+                      <td className="num">{peso(tx.subtotal||tx.total)}</td>
+                      <td className="num" style={{color:'var(--rpt-muted)'}}>{peso(tx.vat||0)}</td>
+                      <td className="num" style={{fontWeight:700,color:'var(--rpt-title)'}}>{peso(tx.total)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
-            <div className="no-print"><Pagination {...txPg}/></div>
-          </div>
+            </div></div>
+            <Pagination {...txPg}/>
+          </ChartCard>
         </>}
 
         {/* ══════════ INVENTORY ══════════ */}
         {activeTab==='inventory' && <>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:12}}>
-            <StatCard label="Total Products"        value={products.length}            color="var(--accent)"/>
-            <StatCard label="Stock Value at Cost"   value={peso(stockValueCost)}       color="var(--purple)"/>
-            <StatCard label="Stock Value at Retail" value={peso(stockValueRetail)}     color="var(--green)"/>
-            <StatCard label="Low Stock"              value={lowStock.length}            color="var(--yellow)"/>
-            <StatCard label="Out of Stock"           value={outStock.length}            color="var(--red)"/>
+          <div className="rpt-kpi-row">
+            <StatCard icon={Package} label="Total Products" value={products.length}/>
+            <StatCard icon={Layers} label="Stock Value at Cost" value={peso(stockValueCost)}/>
+            <StatCard icon={Tag} label="Stock Value at Retail" value={peso(stockValueRetail)}/>
+            <StatCard icon={AlertTriangle} label="Low Stock" value={lowStock.length} tone="amber"/>
+            <StatCard icon={Ban} label="Out of Stock" value={outStock.length} tone="red"/>
           </div>
 
-          <div className="card" style={{padding:20,borderTop:'2px solid var(--accent)'}}>
-            <div style={{fontWeight:700,fontSize:13,marginBottom:4,display:'flex',alignItems:'center',gap:6}}>⭐ Product Demand &amp; Restock Recommendations</div>
-            <div style={{fontSize:10.5,color:'var(--text3)',marginBottom:14}}>Suggested reorder covers 14 days of sales based on the last 30 days.</div>
-
-            {top10ByUnits.length>0 && (
-              <div style={{marginBottom:18}}>
-                <div style={{fontSize:11,fontWeight:600,color:'var(--text2)',marginBottom:8}}>Top 10 Products by Units Sold (30d)</div>
-                <ResponsiveContainer width="100%" height={160}>
-                  <BarChart data={top10ByUnits} layout="vertical" barSize={12}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false}/>
-                    <XAxis type="number" tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false}/>
-                    <YAxis type="category" dataKey="name" tick={{fontSize:9,fill:'var(--text3)'}} tickLine={false} axisLine={false} width={110}/>
-                    <Tooltip formatter={v=>`${v} sold`}/>
-                    <Bar dataKey="sold30" fill={ACCENT} radius={[0,4,4,0]}/>
-                  </BarChart>
-                </ResponsiveContainer>
+          <ChartCard title={<><Star size={14} style={{color:'var(--rpt-amber)'}}/>Product Demand &amp; Restock Recommendations</>}
+            subtitle="Suggested reorder covers 14 days of sales based on the last 30 days.">
+            <div className="rpt-demand-grid">
+              <div>
+                <div style={{fontSize:13,fontWeight:600,color:'var(--rpt-title)',marginBottom:12}}>Top 10 by units sold (30d)</div>
+                <RankedList
+                  items={top10ByUnits.map(p=>({key:p.id,label:p.name,value:p.sold30}))}
+                  renderValue={it=>`${it.value} sold`}
+                  emptyText="No sales in the last 30 days."
+                />
               </div>
-            )}
+              <div>
+                <div style={{marginBottom:12}}>
+                  <SegmentedControl size="sm"
+                    options={['All','Reorder now','Reorder soon','OK','No demand'].map(s=>({value:s,label:<>{s}<span className="rpt-filter-chip">{demandStatusCounts[s]}</span></>}))}
+                    value={demandStatusFilter} onChange={setDemandStatusFilter}/>
+                </div>
+                <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                  <table className="rpt-table">
+                    <thead><tr>
+                      <th>Product</th><th>Category</th><th className="num">Stock</th><th className="num">Sold (30d)</th>
+                      <th className="num">Avg/day</th><th className="num">Days left</th><th className="num">Suggested reorder</th><th>Status</th>
+                    </tr></thead>
+                    <tbody>
+                      {demandFiltered.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:30,color:'var(--rpt-muted)'}}>No products match this filter.</td></tr>
+                      :demandPg.pageItems.map(p=>(
+                        <tr key={p.id}>
+                          <td><div style={{display:'flex',alignItems:'center',gap:8}}><ProductThumb image={p.image} icon={p.icon} category={p.category} size={22} radius={5}/>{p.name}</div></td>
+                          <td style={{color:'var(--rpt-muted)'}}>{p.category}</td>
+                          <td className="num">{p.stock}</td>
+                          <td className="num">{p.sold30}</td>
+                          <td className="num">{p.avgDaily.toFixed(1)}</td>
+                          <td className="num">{p.daysLeft===Infinity?'∞':Math.round(p.daysLeft)}</td>
+                          <td className="num" style={{fontWeight:p.suggestedReorder>0?700:400,color:p.suggestedReorder>0?'var(--rpt-amber)':'var(--rpt-muted)'}}>{p.suggestedReorder}</td>
+                          <td><span className={`rpt-pill ${STATUS_PILL[p.status]}`}><span className="dot"/>{p.status}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div></div>
+                <Pagination {...demandPg}/>
+              </div>
+            </div>
+          </ChartCard>
 
-            <div className="no-print" style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
-              {['All','Reorder now','Reorder soon','OK','No demand'].map(s=>(
-                <button key={s} onClick={()=>setDemandStatusFilter(s)} style={{padding:'4px 12px',borderRadius:99,border:'1px solid',fontSize:10.5,fontWeight:600,cursor:'pointer',fontFamily:'inherit',
-                  ...(demandStatusFilter===s?{background:'var(--accent)',borderColor:'var(--accent)',color:'#0a0a0a'}:{background:'transparent',borderColor:'var(--border)',color:'var(--text2)'})}}>
-                  {s} {demandStatusCounts[s]}
-                </button>
+          <div className="rpt-grid-12">
+            <div className="rpt-col-6">
+              <ChartCard title={<><AlertTriangle size={14} style={{color:'var(--rpt-amber)'}}/>Low Stock</>}>
+                <div className="rpt-simple-list">
+                  {lowStockRows.length===0?<div className="rpt-empty">All good!</div>
+                  :lowStockPg.pageItems.map(p=>(
+                    <div key={p.id} className="rpt-simple-row">
+                      <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                        <ProductThumb image={p.image} icon={p.icon} category={p.category} size={26} radius={6}/>
+                        <div style={{minWidth:0}}>
+                          <div className="rpt-simple-name">{p.name}</div>
+                          <div className="rpt-simple-sub">{p.category} · {p.sold30} sold (30d) · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div>
+                        </div>
+                      </div>
+                      <span style={{fontSize:13,fontWeight:700,color:'var(--rpt-amber)',flexShrink:0}}>{p.stock} left</span>
+                    </div>
+                  ))}
+                </div>
+                <Pagination {...lowStockPg}/>
+              </ChartCard>
+            </div>
+            <div className="rpt-col-6">
+              <ChartCard title={<><Ban size={14} style={{color:'var(--rpt-red)'}}/>Out of Stock</>}>
+                <div className="rpt-simple-list">
+                  {outStockRows.length===0?<div className="rpt-empty">No out of stock products!</div>
+                  :outStockPg.pageItems.map(p=>(
+                    <div key={p.id} className="rpt-simple-row">
+                      <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                        <ProductThumb image={p.image} icon={p.icon} category={p.category} size={26} radius={6}/>
+                        <div style={{minWidth:0}}>
+                          <div className="rpt-simple-name">{p.name}</div>
+                          <div className="rpt-simple-sub">{p.category} · {p.sold30} sold (30d) · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div>
+                        </div>
+                      </div>
+                      <span style={{fontSize:12,fontWeight:700,color:'var(--rpt-red)',flexShrink:0}}>OUT</span>
+                    </div>
+                  ))}
+                </div>
+                <Pagination {...outStockPg}/>
+              </ChartCard>
+            </div>
+          </div>
+
+          <ChartCard title={<><Archive size={14} style={{color:'var(--rpt-muted)'}}/>Slow-Moving Products</>} subtitle="In stock, no sale in 90+ days.">
+            <div className="rpt-simple-list">
+              {slowMoving.length===0?<div className="rpt-empty">Nothing slow-moving right now.</div>
+              :slowMovingPg.pageItems.map(p=>(
+                <div key={p.id} className="rpt-simple-row">
+                  <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                    <ProductThumb image={p.image} icon={p.icon} category={p.category} size={26} radius={6}/>
+                    <div style={{minWidth:0}}>
+                      <div className="rpt-simple-name">{p.name}</div>
+                      <div className="rpt-simple-sub">{p.stock} in stock · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div>
+                    </div>
+                  </div>
+                  <div style={{fontSize:13,fontWeight:700,color:'var(--rpt-red)',flexShrink:0}}>{peso(p.tiedUp)} tied up</div>
+                </div>
               ))}
             </div>
+            <Pagination {...slowMovingPg}/>
+          </ChartCard>
 
-            <div className="tbl-wrap">
-              <table>
-                <thead><tr>{['Product','Category','Stock','Sold (30d)','Avg/day','Days Left','Suggested Reorder','Status'].map(h=><th key={h}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {demandFiltered.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:30,color:'var(--text3)'}}>No products match this filter.</td></tr>
-                  :(isPrinting?demandFiltered:demandPg.pageItems).map(p=>(
-                    <tr key={p.id}>
-                      <td style={{fontSize:12,fontWeight:500}}><div style={{display:'flex',alignItems:'center',gap:8}}><ProductThumb image={p.image} icon={p.icon} category={p.category} size={22} radius={5}/>{p.name}</div></td>
-                      <td><span className="badge badge-accent" style={{fontSize:10}}>{p.category}</span></td>
-                      <td style={{fontSize:11}}>{p.stock}</td>
-                      <td style={{fontSize:11}}>{p.sold30}</td>
-                      <td style={{fontSize:11}}>{p.avgDaily.toFixed(1)}</td>
-                      <td style={{fontSize:11}}>{p.daysLeft===Infinity?'∞':Math.round(p.daysLeft)}</td>
-                      <td style={{fontSize:11,fontWeight:p.suggestedReorder>0?700:400,color:p.suggestedReorder>0?'var(--yellow)':'var(--text3)'}}>{p.suggestedReorder}</td>
-                      <td><span className={`badge ${STATUS_BADGE[p.status]}`} style={{fontSize:10}}>{p.status}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="rpt-grid-12">
+            <div className="rpt-col-6">
+              <ChartCard title={<><AlertOctagon size={14} style={{color:'var(--rpt-red)'}}/>Products Selling Below Cost</>} subtitle={`Loss on units sold during ${periodLabel}.`}>
+                {belowCost.length===0?<div className="rpt-empty">No products are selling at a loss!</div>
+                :<>
+                  <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                    <table className="rpt-table">
+                      <thead><tr><th>Product</th><th className="num">Cost price</th><th className="num">Selling price</th><th className="num">Loss/unit</th><th className="num">Sold</th><th className="num">Total loss</th></tr></thead>
+                      <tbody>
+                        {belowCostPg.pageItems.map(p=>(
+                          <tr key={p.id}>
+                            <td><div style={{display:'flex',alignItems:'center',gap:8}}><ProductThumb image={p.image} icon={p.icon} category={p.category} size={22} radius={5}/>{p.name}</div></td>
+                            <td className="num" style={{color:'var(--rpt-muted)'}}>{peso(p.costPrice)}</td>
+                            <td className="num" style={{color:'var(--rpt-red)',fontWeight:700}}>{peso(p.price)}</td>
+                            <td className="num" style={{color:'var(--rpt-red)'}}>{peso(p.lossPerUnit)}</td>
+                            <td className="num">{p.soldInPeriod}</td>
+                            <td className="num" style={{color:'var(--rpt-red)',fontWeight:700}}>{peso(p.totalLoss)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div></div>
+                  <Pagination {...belowCostPg}/>
+                </>}
+              </ChartCard>
             </div>
-            <div className="no-print"><Pagination {...demandPg}/></div>
-          </div>
-
-          <div className="kpi-bottom-grid">
-            <div className="card" style={{padding:20,borderTop:'2px solid var(--yellow)',display:'flex',flexDirection:'column'}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:12,display:'flex',alignItems:'center',gap:6}}><AlertTriangle size={13} style={{color:'var(--yellow)'}}/>Low Stock</div>
-              <div style={{flex:1}}>
-                {lowStockRows.length===0?<EmptyRow>All good!</EmptyRow>
-                :(isPrinting?lowStockRows:lowStockPg.pageItems).map(p=>(
-                  <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 0',borderBottom:'1px solid var(--border)'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
-                      <ProductThumb image={p.image} icon={p.icon} category={p.category} size={26} radius={6}/>
-                      <div style={{minWidth:0}}><div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div><div style={{fontSize:10,color:'var(--text3)'}}>{p.category} · {p.sold30} sold (30d) · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div></div>
-                    </div>
-                    <span style={{fontSize:12,fontWeight:700,color:'var(--yellow)',flexShrink:0}}>{p.stock} left</span>
-                  </div>
-                ))}
-              </div>
-              <div className="no-print"><Pagination {...lowStockPg}/></div>
+            <div className="rpt-col-6">
+              <ChartCard title={<><AlertTriangle size={14} style={{color:'var(--rpt-amber)'}}/>Low Margin Products</>} subtitle="Margin between 0–15%.">
+                {lowMargin.length===0?<div className="rpt-empty">All products have healthy margins!</div>
+                :<>
+                  <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                    <table className="rpt-table">
+                      <thead><tr><th>Product</th><th className="num">Cost price</th><th className="num">Selling price</th><th className="num">Margin %</th><th className="num">Stock</th></tr></thead>
+                      <tbody>
+                        {lowMarginPg.pageItems.map(p=>(
+                          <tr key={p.id}>
+                            <td><div style={{display:'flex',alignItems:'center',gap:8}}><ProductThumb image={p.image} icon={p.icon} category={p.category} size={22} radius={5}/>{p.name}</div></td>
+                            <td className="num" style={{color:'var(--rpt-muted)'}}>{peso(p.costPrice)}</td>
+                            <td className="num">{peso(p.price)}</td>
+                            <td className="num" style={{fontWeight:700,color:p.margin<=5?'var(--rpt-red)':'var(--rpt-amber)'}}>{p.margin}%</td>
+                            <td className="num">{p.stock}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div></div>
+                  <Pagination {...lowMarginPg}/>
+                </>}
+              </ChartCard>
             </div>
-            <div className="card" style={{padding:20,borderTop:'2px solid var(--red)',display:'flex',flexDirection:'column'}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:12,display:'flex',alignItems:'center',gap:6}}><Ban size={13} style={{color:'var(--red)'}}/>Out of Stock</div>
-              <div style={{flex:1}}>
-                {outStockRows.length===0?<EmptyRow>No out of stock products!</EmptyRow>
-                :(isPrinting?outStockRows:outStockPg.pageItems).map(p=>(
-                  <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 0',borderBottom:'1px solid var(--border)'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
-                      <ProductThumb image={p.image} icon={p.icon} category={p.category} size={26} radius={6}/>
-                      <div style={{minWidth:0}}><div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div><div style={{fontSize:10,color:'var(--text3)'}}>{p.category} · {p.sold30} sold (30d) · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div></div>
-                    </div>
-                    <span style={{fontSize:11,fontWeight:700,color:'var(--red)',flexShrink:0}}>OUT</span>
-                  </div>
-                ))}
-              </div>
-              <div className="no-print"><Pagination {...outStockPg}/></div>
-            </div>
-          </div>
-
-          <div className="card" style={{padding:20,borderTop:'2px solid var(--orange)',display:'flex',flexDirection:'column'}}>
-            <div style={{fontWeight:600,fontSize:13,marginBottom:4,display:'flex',alignItems:'center',gap:6}}><Archive size={13} style={{color:'var(--orange)'}}/>Slow-Moving Products</div>
-            <div style={{fontSize:10.5,color:'var(--text3)',marginBottom:12}}>In stock, no sale in 90+ days.</div>
-            {slowMoving.length===0?<EmptyRow>Nothing slow-moving right now.</EmptyRow>
-            :(isPrinting?slowMoving:slowMovingPg.pageItems).map(p=>(
-              <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
-                <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
-                  <ProductThumb image={p.image} icon={p.icon} category={p.category} size={26} radius={6}/>
-                  <div style={{minWidth:0}}>
-                    <div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div>
-                    <div style={{fontSize:10,color:'var(--text3)'}}>{p.stock} in stock · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div>
-                  </div>
-                </div>
-                <div style={{fontSize:11,fontWeight:700,color:'var(--red)',flexShrink:0}}>{peso(p.tiedUp)} tied up</div>
-              </div>
-            ))}
-            <div className="no-print"><Pagination {...slowMovingPg}/></div>
-          </div>
-
-          <div className="card" style={{padding:20,borderTop:'2px solid var(--red)'}}>
-            <div style={{fontWeight:700,fontSize:13,marginBottom:14}}>Pricing Issues</div>
-            <div style={{fontWeight:600,fontSize:12.5,marginBottom:4,display:'flex',alignItems:'center',gap:6}}><AlertOctagon size={13} style={{color:'var(--red)'}}/>Products Selling Below Cost</div>
-            <div style={{fontSize:11,color:'var(--text3)',marginBottom:12}}>Loss on units sold during {periodLabel}.</div>
-            {belowCost.length===0?<EmptyRow>No products are selling at a loss!</EmptyRow>
-            :<div className="tbl-wrap">
-              <table>
-                <thead><tr>{['Product','Cost Price','Selling Price','Loss/Unit','Sold This Period','Total Loss'].map(h=><th key={h}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {(isPrinting?belowCost:belowCostPg.pageItems).map(p=>(
-                    <tr key={p.id}>
-                      <td style={{fontSize:12,fontWeight:500}}><div style={{display:'flex',alignItems:'center',gap:8}}><ProductThumb image={p.image} icon={p.icon} category={p.category} size={22} radius={5}/>{p.name}</div></td>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>{peso(p.costPrice)}</td>
-                      <td style={{fontSize:11,color:'var(--red)',fontWeight:700}}>{peso(p.price)}</td>
-                      <td style={{fontSize:11,color:'var(--red)'}}>{peso(p.lossPerUnit)}</td>
-                      <td style={{fontSize:11}}>{p.soldInPeriod}</td>
-                      <td style={{fontSize:11,color:'var(--red)',fontWeight:700}}>{peso(p.totalLoss)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>}
-            <div className="no-print"><Pagination {...belowCostPg}/></div>
-
-            <div style={{fontWeight:600,fontSize:12.5,marginTop:20,marginBottom:4,display:'flex',alignItems:'center',gap:6}}><AlertTriangle size={13} style={{color:'var(--yellow)'}}/>Low Margin Products (0–15%)</div>
-            {lowMargin.length===0?<EmptyRow>All products have healthy margins!</EmptyRow>
-            :<div className="tbl-wrap">
-              <table>
-                <thead><tr>{['Product','Cost Price','Selling Price','Margin %','Stock'].map(h=><th key={h}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {(isPrinting?lowMargin:lowMarginPg.pageItems).map(p=>(
-                    <tr key={p.id}>
-                      <td style={{fontSize:12,fontWeight:500}}><div style={{display:'flex',alignItems:'center',gap:8}}><ProductThumb image={p.image} icon={p.icon} category={p.category} size={22} radius={5}/>{p.name}</div></td>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>{peso(p.costPrice)}</td>
-                      <td style={{fontSize:11}}>{peso(p.price)}</td>
-                      <td style={{fontSize:11,fontWeight:700,color:p.margin<=5?'var(--red)':'var(--yellow)'}}>{p.margin}%</td>
-                      <td style={{fontSize:11}}>{p.stock}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>}
-            <div className="no-print"><Pagination {...lowMarginPg}/></div>
           </div>
         </>}
 
         {/* ══════════ RETURNS & REFUNDS ══════════ */}
         {activeTab==='returns' && <>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:12}}>
-            <StatCard label="Pending"          value={pendingCount}                    color="var(--yellow)"/>
-            <StatCard label="Approved Returns" value={returnsApproved.length}          color="var(--accent)" sub={peso(approvedReturnsAmt)}/>
-            <StatCard label="Approved Refunds" value={refundsApproved.length}          color="var(--accent)" sub={peso(approvedRefundsAmt)}/>
-            <StatCard label="Total Money Back" value={peso(totalMoneyBack)}            color="var(--red)"/>
-            <StatCard label="Rejected"         value={rejectedCount}                   color="var(--text3)"/>
+          <div className="rpt-kpi-row">
+            <StatCard icon={Clock} label="Pending" value={pendingCount} tone="amber"/>
+            <StatCard icon={RotateCcw} label="Approved Returns" value={returnsApproved.length} sub={peso(approvedReturnsAmt)}/>
+            <StatCard icon={Undo2} label="Approved Refunds" value={refundsApproved.length} sub={peso(approvedRefundsAmt)}/>
+            <StatCard icon={Banknote} label="Total Money Back" value={peso(totalMoneyBack)} tone="red"/>
+            <StatCard icon={XCircle} label="Rejected" value={rejectedCount}/>
           </div>
 
-          <div className="kpi-bottom-grid">
-            <div className="card" style={{padding:20}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Returned Units by Condition</div>
-              {conditionTally.length===0?<EmptyRow>No approved returns with recorded conditions this period.</EmptyRow>:<>
-                <ResponsiveContainer width="100%" height={160}>
-                  <PieChart><Pie data={conditionTally} cx="50%" cy="50%" innerRadius={42} outerRadius={65} dataKey="value" paddingAngle={3}>{conditionTally.map((d,i)=><Cell key={i} fill={d.color}/>)}</Pie><Tooltip/></PieChart>
-                </ResponsiveContainer>
-                <div style={{display:'flex',flexDirection:'column',gap:7,marginTop:8}}>
-                  {conditionTally.map(d=>(
-                    <div key={d.name} style={{display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11.5}}>
-                      <span style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:99,background:d.color,flexShrink:0}}/>{d.name}</span>
-                      <span style={{color:'var(--text2)'}}>{d.value} units · {conditionTotal?Math.round(d.value/conditionTotal*100):0}%</span>
-                    </div>
-                  ))}
-                </div>
-              </>}
+          <div className="rpt-grid-12">
+            <div className="rpt-col-6">
+              <ChartCard title="Returned Units by Condition">
+                <DonutCard data={conditionTally.map(d=>({name:d.name,value:d.value,color:d.name==='Defective'?'#DC2626':'#059669'}))} caption="units" emptyText="No approved returns with recorded conditions this period."/>
+              </ChartCard>
             </div>
-            <div className="card" style={{padding:20}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:14,display:'flex',alignItems:'center',gap:6}}><ClipboardList size={13} style={{color:'var(--accent)'}}/>Top Reasons</div>
-              {topReasons.length===0?<EmptyRow>No requests this period.</EmptyRow>:
-                <div style={{display:'flex',flexDirection:'column',gap:10}}>
-                  {topReasons.map(r=>(
-                    <div key={r.name}>
-                      <div style={{display:'flex',justifyContent:'space-between',fontSize:11.5,marginBottom:3}}><span style={{color:'var(--text2)'}}>{r.name}</span><span style={{fontWeight:700}}>{r.count}</span></div>
-                      <div style={{height:5,background:'var(--bg5)',borderRadius:3,overflow:'hidden'}}><div style={{height:'100%',background:'var(--accent)',width:`${Math.round(r.count/reasonMax*100)}%`}}/></div>
-                    </div>
-                  ))}
-                </div>}
+            <div className="rpt-col-6">
+              <ChartCard title={<><ClipboardList size={14} style={{color:'var(--rpt-green)'}}/>Top Reasons</>}>
+                <RankedList items={topReasons.map(r=>({key:r.name,label:r.name,value:r.count}))} max={reasonMax} emptyText="No requests this period."/>
+              </ChartCard>
             </div>
           </div>
 
-          <div className="card" style={{padding:20,borderTop:'2px solid var(--red)'}}>
-            <div style={{fontWeight:600,fontSize:13,marginBottom:4,display:'flex',alignItems:'center',gap:6}}><AlertOctagon size={13} style={{color:'var(--red)'}}/>Defective Returns</div>
-            <div style={{fontSize:11,color:'var(--text3)',marginBottom:12}}>{defectiveRows.length} defective unit{defectiveRows.length===1?'':'s'} · {peso(defectiveTotal)}</div>
-            {defectiveRows.length===0?<EmptyRow>No defective units this period.</EmptyRow>
-            :<div className="tbl-wrap">
-              <table>
-                <thead><tr>{['Date','Return #','Product','Serial','Defect Note','Cost Value'].map(h=><th key={h}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {(isPrinting?defectiveRows:defectivePg.pageItems).map(r=>(
-                    <tr key={r.rowId}>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>{fmtDate(r.date)}</td>
-                      <td style={{fontSize:11,color:'var(--accent)'}}>#{String(r.returnId).padStart(4,'0')}</td>
-                      <td style={{fontSize:12}}>{r.product}</td>
-                      <td style={{fontSize:11,fontFamily:"monospace"}}>{r.serial}</td>
-                      <td style={{fontSize:11,color:'var(--text2)'}}>{r.note}</td>
-                      <td style={{fontSize:11,color:'var(--red)',fontWeight:600}}>{peso(r.costValue)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>}
-            <div className="no-print"><Pagination {...defectivePg}/></div>
-          </div>
+          <ChartCard title={<><AlertOctagon size={14} style={{color:'var(--rpt-red)'}}/>Defective Returns</>}
+            subtitle={`${defectiveRows.length} defective unit${defectiveRows.length===1?'':'s'} · ${peso(defectiveTotal)}`}>
+            {defectiveRows.length===0?<div className="rpt-empty">No defective units this period.</div>
+            :<>
+              <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                <table className="rpt-table">
+                  <thead><tr><th>Date</th><th>Return #</th><th>Product</th><th>Serial</th><th>Defect note</th><th className="num">Cost value</th></tr></thead>
+                  <tbody>
+                    {defectivePg.pageItems.map(r=>(
+                      <tr key={r.rowId}>
+                        <td style={{color:'var(--rpt-muted)'}}>{fmtDate(r.date)}</td>
+                        <td style={{color:'var(--rpt-green)'}}>#{String(r.returnId).padStart(4,'0')}</td>
+                        <td>{r.product}</td>
+                        <td>{r.serial}</td>
+                        <td style={{color:'var(--rpt-body)'}}>{r.note}</td>
+                        <td className="num" style={{color:'var(--rpt-red)',fontWeight:600}}>{peso(r.costValue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div></div>
+              <Pagination {...defectivePg}/>
+            </>}
+          </ChartCard>
 
-          <div className="card" style={{padding:20}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap',marginBottom:12}}>
-              <div style={{fontWeight:600,fontSize:13}}>History ({historyFiltered.length})</div>
-              <div className="no-print" style={{display:'flex',gap:12,flexWrap:'wrap'}}>
-                <div style={{display:'flex',gap:6}}>
-                  {['All','Returns','Refunds'].map(s=>(
-                    <button key={s} onClick={()=>setHistoryType(s)} style={{padding:'4px 10px',borderRadius:99,border:'1px solid',fontSize:10.5,fontWeight:600,cursor:'pointer',fontFamily:'inherit',
-                      ...(historyType===s?{background:'var(--blue)',borderColor:'var(--blue)',color:'#fff'}:{background:'transparent',borderColor:'var(--border)',color:'var(--text2)'})}}>{s}</button>
-                  ))}
-                </div>
-                <div style={{display:'flex',gap:6}}>
-                  {['All','Pending','Approved','Rejected'].map(s=>(
-                    <button key={s} onClick={()=>setHistoryStatus(s)} style={{padding:'4px 10px',borderRadius:99,border:'1px solid',fontSize:10.5,fontWeight:600,cursor:'pointer',fontFamily:'inherit',
-                      ...(historyStatus===s?{background:'var(--accent)',borderColor:'var(--accent)',color:'#0a0a0a'}:{background:'transparent',borderColor:'var(--border)',color:'var(--text2)'})}}>{s}</button>
-                  ))}
-                </div>
-              </div>
+          <ChartCard title={`History (${historyFiltered.length})`} actions={
+            <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+              <SegmentedControl size="sm" options={['All','Returns','Refunds'].map(s=>({value:s,label:s}))} value={historyType} onChange={setHistoryType}/>
+              <SegmentedControl size="sm" options={['All','Pending','Approved','Rejected'].map(s=>({value:s,label:s}))} value={historyStatus} onChange={setHistoryStatus}/>
             </div>
-            {historyFiltered.length===0?<EmptyRow>No returns or refunds match this filter.</EmptyRow>
-            :<div className="tbl-wrap">
-              <table>
-                <thead><tr>{['Type','#','Txn #','Date','Customer','Amount','Status','Processed By'].map(h=><th key={h}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {(isPrinting?historyFiltered:historyPg.pageItems).map(r=>(
-                    <tr key={`${r.kind}-${r.id}`}>
-                      <td><span className={`badge ${r.kind==='Return'?'badge-accent':'badge-blue'}`} style={{fontSize:10}}>{r.kind}</span></td>
-                      <td style={{fontSize:11,color:'var(--accent)'}}>#{String(r.id).padStart(4,'0')}</td>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>#{String(r.txnId).padStart(4,'0')}</td>
-                      <td style={{fontSize:11,color:'var(--text3)'}}>{fmtDate(r.createdAt)}</td>
-                      <td style={{fontSize:12}}>{r.customerName||'Walk-in'}</td>
-                      <td style={{fontSize:11,fontWeight:600}}>{peso(r.total)}</td>
-                      <td><StatusBadge status={r.status} isLight={isLight}/></td>
-                      <td style={{fontSize:11,color:'var(--text2)'}}>{r.processedBy||'—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>}
-            <div className="no-print"><Pagination {...historyPg}/></div>
-          </div>
+          }>
+            {historyFiltered.length===0?<div className="rpt-empty">No returns or refunds match this filter.</div>
+            :<>
+              <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                <table className="rpt-table">
+                  <thead><tr><th>Type</th><th>#</th><th>Txn #</th><th>Date</th><th>Customer</th><th className="num">Amount</th><th>Status</th><th>Processed by</th></tr></thead>
+                  <tbody>
+                    {historyPg.pageItems.map(r=>(
+                      <tr key={`${r.kind}-${r.id}`}>
+                        <td><span className="rpt-pill rpt-pill-gray"><span className="dot" style={{background:r.kind==='Return'?'#059669':'#8B5CF6'}}/>{r.kind}</span></td>
+                        <td style={{color:'var(--rpt-green)'}}>#{String(r.id).padStart(4,'0')}</td>
+                        <td style={{color:'var(--rpt-muted)'}}>#{String(r.txnId).padStart(4,'0')}</td>
+                        <td style={{color:'var(--rpt-muted)'}}>{fmtDate(r.createdAt)}</td>
+                        <td>{r.customerName||'Walk-in'}</td>
+                        <td className="num" style={{fontWeight:600}}>{peso(r.total)}</td>
+                        <td><StatusBadge status={r.status} isLight={true}/></td>
+                        <td style={{color:'var(--rpt-body)'}}>{r.processedBy||'—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div></div>
+              <Pagination {...historyPg}/>
+            </>}
+          </ChartCard>
         </>}
 
         {/* ══════════ CUSTOMERS ══════════ */}
         {activeTab==='customer' && <>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:12}}>
-            <StatCard label="Total Customers"  value={customers.length}           color="var(--accent)"/>
-            <StatCard label="Total Points"     value={totalPoints.toLocaleString()} color="var(--yellow)" sub="All-time"/>
-            <StatCard label="Platinum Members" value={platinumCount}               color="var(--purple)" sub="All-time"/>
-            <StatCard label="Gold Members"      value={goldCount}                   color="var(--yellow)" sub="All-time"/>
+          <div className="rpt-kpi-row">
+            <StatCard icon={Users} label="Total Customers" value={customers.length}/>
+            <StatCard icon={Star} label="Total Points" value={totalPoints.toLocaleString()} sub="All-time"/>
+            <StatCard icon={Gem} label="Platinum Members" value={platinumCount} sub="All-time"/>
+            <StatCard icon={Award} label="Gold Members" value={goldCount} sub="All-time"/>
           </div>
 
-          <div className="card" style={{padding:20}}>
-            <div style={{fontWeight:600,fontSize:13,marginBottom:4,display:'flex',alignItems:'center',gap:6}}><Award size={13} style={{color:'var(--purple)'}}/>Loyalty Tier Criteria</div>
-            <div style={{fontSize:11,color:'var(--text3)',marginBottom:14}}>Points earned: 10 pts per transaction + 1 pt per ₱100 spent</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:12}}>
+          <div className="rpt-grid-12">
+            <div className="rpt-col-5">
+              <ChartCard title="Tier Distribution" subtitle="All-time">
+                <DonutCard data={tierCounts.map(tc=>({name:tc.name,value:tc.value,color:tc.name==='Platinum'?'#8B5CF6':tc.name==='Gold'?'#D97706':tc.name==='Silver'?'#64748B':'#059669'}))} caption="customers" emptyText="No customers yet."/>
+              </ChartCard>
+            </div>
+            <div className="rpt-col-7">
+              <ChartCard title={<><Star size={14} style={{color:'var(--rpt-amber)'}}/>Top Customers</>} subtitle={`By amount spent during ${periodLabel}.`}>
+                {topCustsPeriod.length===0?<div className="rpt-empty">No customer purchases this period.</div>:
+                  <div className="rpt-simple-list">
+                    {topCustsPeriod.map(m=>{
+                      const tier=getTier(m.customer.points)
+                      return(
+                        <div key={m.id} className="rpt-simple-row">
+                          <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                            <div style={{width:28,height:28,borderRadius:8,background:'var(--rpt-green)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:'#fff',flexShrink:0}}>{m.customer.name.charAt(0)}</div>
+                            <div style={{minWidth:0}}>
+                              <div className="rpt-simple-name">{m.customer.name}</div>
+                              <div className="rpt-simple-sub">{tier.icon} {tier.label}</div>
+                            </div>
+                          </div>
+                          <div style={{textAlign:'right',flexShrink:0}}>
+                            <div style={{fontSize:13,color:'var(--rpt-title)',fontWeight:600}}>{peso(m.amount)}</div>
+                            <div style={{fontSize:11.5,color:'var(--rpt-muted)'}}>{m.purchases} txns</div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>}
+              </ChartCard>
+            </div>
+          </div>
+
+          <ChartCard title={<><Award size={14} style={{color:'#8B5CF6'}}/>Loyalty Tier Criteria</>} subtitle="10 pts/transaction + 1 pt per ₱100 spent">
+            <div className="tier-row">
               {[
-                {tier:'Bronze',   range:'0 – 499 pts',       color:'var(--accent)', icon:'🥉', count:bronzeCount,   next:'Need 500 pts for Silver'},
-                {tier:'Silver',   range:'500 – 1,499 pts',   color:SLATE,           icon:'🥈', count:silverCount,   next:'Need 1,500 pts for Gold'},
-                {tier:'Gold',     range:'1,500 – 2,999 pts', color:'var(--yellow)', icon:'🥇', count:goldCount,     next:'Need 3,000 pts for Platinum'},
-                {tier:'Platinum', range:'3,000+ pts',        color:'var(--purple)', icon:'💎', count:platinumCount, next:'Highest tier!'},
-              ].map(t=>(
-                <div key={t.tier} style={{padding:16,background:'var(--bg2)',borderRadius:10,borderTop:`3px solid ${t.color}`,textAlign:'center'}}>
-                  <div style={{fontSize:30,marginBottom:6}}>{t.icon}</div>
-                  <div style={{fontSize:13,fontWeight:700,color:t.color,marginBottom:4}}>{t.tier}</div>
-                  <div style={{fontSize:18,fontWeight:700,marginBottom:4}}>{t.count}</div>
-                  <div style={{fontSize:10,color:'var(--text3)',marginBottom:6}}>{t.range}</div>
-                  <div style={{fontSize:9,color:'var(--text3)',lineHeight:1.4}}>{t.next}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:14}}>
-            <div className="card" style={{padding:20}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Tier Distribution <span style={{fontWeight:500,color:'var(--text3)',fontSize:10.5}}>(All-time)</span></div>
-              {tierCounts.length===0?<EmptyRow>No customers yet.</EmptyRow>
-              :<ResponsiveContainer width="100%" height={200}>
-                <PieChart><Pie data={tierCounts} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" paddingAngle={3}>{tierCounts.map((t,i)=><Cell key={i} fill={t.color}/>)}</Pie><Tooltip/></PieChart>
-              </ResponsiveContainer>}
-            </div>
-            <div className="card" style={{padding:20}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:4,display:'flex',alignItems:'center',gap:6}}><Star size={13} style={{color:'var(--yellow)'}}/>Top Customers</div>
-              <div style={{fontSize:10.5,color:'var(--text3)',marginBottom:12}}>By amount spent during {periodLabel}.</div>
-              {topCustsPeriod.length===0?<EmptyRow>No customer purchases this period.</EmptyRow>:
-                <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                  {topCustsPeriod.map(m=>{
-                    const tier=getTier(m.customer.points)
-                    return(
-                      <div key={m.id} style={{display:'flex',alignItems:'center',gap:10}}>
-                        <div style={{width:26,height:26,borderRadius:6,background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,color:'#0a0a0a',flexShrink:0}}>{m.customer.name.charAt(0)}</div>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:12,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.customer.name}</div>
-                          <div style={{fontSize:10,color:tier.color}}>{tier.icon} {tier.label}</div>
-                        </div>
-                        <div style={{textAlign:'right',flexShrink:0}}>
-                          <div style={{fontSize:11,color:'var(--green)',fontWeight:600}}>{peso(m.amount)}</div>
-                          <div style={{fontSize:10,color:'var(--text3)'}}>{m.purchases} txns</div>
-                        </div>
+                {tier:'Bronze',   range:'0–499',       icon:'🥉', color:'#059669', count:bronzeCount},
+                {tier:'Silver',   range:'500–1,499',   icon:'🥈', color:'#64748B', count:silverCount},
+                {tier:'Gold',     range:'1,500–2,999', icon:'🥇', color:'#D97706', count:goldCount},
+                {tier:'Platinum', range:'3,000+',      icon:'💎', color:'#8B5CF6', count:platinumCount},
+              ].map(tc=>{
+                const share = customers.length ? Math.round(tc.count/customers.length*100) : 0
+                return (
+                  <div key={tc.tier} className="tier-tile">
+                    <div className="tier-tile-icon" style={{background:`${tc.color}1a`}}>{tc.icon}</div>
+                    <div className="tier-tile-body">
+                      <div className="tier-tile-top">
+                        <span className="tier-tile-name">{tc.tier}</span>
+                        <span className="tier-tile-count">{tc.count}</span>
                       </div>
-                    )
-                  })}
-                </div>}
+                      <div className="tier-tile-range">{tc.range} pts</div>
+                      <div className="tier-tile-track"><div className="tier-tile-fill" style={{width:`${share}%`,background:tc.color}}/></div>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
-          </div>
+          </ChartCard>
         </>}
+
+        </div>
       </div>
     </div>
   )

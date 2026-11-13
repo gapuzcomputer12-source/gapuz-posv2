@@ -32,12 +32,18 @@ export function computeSalesMetrics({ transactions = [], refunds = [], returns =
   const approvedRefunds = refunds.filter(r => r.status === 'Approved' && inRange(approvedDate(r), from, to))
   const refundTotal = approvedRefunds.reduce((s, r) => s + (r.total || 0), 0)
   const refundCount = approvedRefunds.length
-  // Refunds are money-only now (no items/qty — see the refund audit), so
-  // there's no per-line profit to subtract. A refund's `total` is a flat
-  // VAT-inclusive peso amount that comes straight out of profit; back out
-  // the VAT portion (total / 1.12) to get the pre-VAT amount actually
-  // eating into profit.
-  const refundedProfit = approvedRefunds.reduce((s, r) => s + (r.total || 0) / 1.12, 0)
+  // Refunds are money-only post-redesign (no items/qty — see the refund
+  // audit), so most rows have no per-line profit to subtract: a refund's
+  // `total` is a flat VAT-inclusive peso amount, and backing out the VAT
+  // portion (total / 1.12) gives the pre-VAT amount actually eating into
+  // profit. A handful of legacy rows predate that redesign and still carry
+  // `items` — for those, use the same per-item (price − cost) × qty basis
+  // as returns instead, so a legacy refund's profit hit reflects what was
+  // actually sold rather than its flat total.
+  const refundedProfit = approvedRefunds.reduce((s, r) => {
+    if (r.items?.length) return s + r.items.reduce((a, i) => a + lineProfit(i), 0)
+    return s + (r.total || 0) / 1.12
+  }, 0)
 
   // A Return's `items` are already exactly the quantities being returned
   // (no separate full-qty vs partial-qty split like Refunds), so lineProfit
@@ -51,7 +57,7 @@ export function computeSalesMetrics({ transactions = [], refunds = [], returns =
 
   const deducted    = refundTotal + returnTotal
   const netSales     = grossSales - deducted
-  const netProfit    = grossProfit - refundedProfit - returnedProfit
+  const netProfit    = Math.round((grossProfit - refundedProfit - returnedProfit) * 100) / 100
   // Refund/return totals are VAT-inclusive (subtotal * 1.12), so the VAT
   // portion of the deducted amount is amount − amount / 1.12.
   const refundedVat = deducted - deducted / 1.12
