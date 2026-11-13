@@ -17,6 +17,15 @@ function CameraScanner({ onResult, onCancel }) {
     const html5QrCode = new Html5Qrcode(READER_ID)
     let stopped = false
     let lastCode = null
+    let matchCount = 0
+    // A single blurry/glare-y frame can decode to a plausible-looking but
+    // wrong string — the first hit was being accepted immediately, which is
+    // exactly how a one-off misread slips through as a "scanned" serial.
+    // Requiring the same text twice in a row (two consecutive ~15fps
+    // frames, ~130ms) filters that out: a genuine steady scan repeats the
+    // same correct result frame after frame, but a fluke misread almost
+    // never produces the identical wrong string twice back to back.
+    const REQUIRED_MATCHES = 2
 
     // React.StrictMode double-invokes this effect in dev (mount → cleanup →
     // mount) to surface non-idempotent effects. Calling .stop() while
@@ -45,10 +54,14 @@ function CameraScanner({ onResult, onCancel }) {
         },
       },
       (decodedText) => {
-        // Ignore repeat reads of the same code while the camera keeps scanning
-        // the same label (would otherwise fire dozens of times per second).
-        if (stopped || decodedText === lastCode) return
-        lastCode = decodedText
+        if (stopped) return
+        if (decodedText === lastCode) {
+          matchCount += 1
+        } else {
+          lastCode = decodedText
+          matchCount = 1
+        }
+        if (matchCount < REQUIRED_MATCHES) return
         stopped = true
         releaseCamera(stopSelf)
         html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {}).finally(() => onResult(decodedText))
