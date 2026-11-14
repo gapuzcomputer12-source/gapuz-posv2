@@ -3,7 +3,7 @@ import { Pencil } from 'lucide-react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore, useAppStore, useProductStore, useCustomerStore, useTransactionStore, useRefundStore, useReturnStore, useHoldStore, useCategoryStore, useStaffStore, useActivityLogStore } from '../store'
 import { useT, useBreakpoint, passwordError } from '../utils/helpers'
-import { useToast } from '../utils/toast'
+import { useToast, ToastViewport } from '../utils/toast'
 import Modal from './Modal'
 
 const SidebarIcon = ({ children }) => (
@@ -338,8 +338,14 @@ export default function Layout() {
           </div>
         </header>
 
-        <div style={{ flex:1, overflow:'hidden' }}>
+        <div style={{ flex:1, overflow:'hidden', position:'relative' }}>
           <Outlet/>
+          {/* Centered over this main-content area (excludes the sidebar).
+              POS renders its own ToastViewport instances instead — centered
+              over just its product-grid pane (desktop) or placed to clear
+              the cart's checkout bar (mobile) — so skip it here to avoid
+              showing every toast twice. */}
+          {location.pathname !== '/pos' && <ToastViewport bottomOffset={24}/>}
         </div>
       </div>
 

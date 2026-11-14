@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore, useAppStore } from '../store'
-import { useToast } from '../utils/toast'
+import { useToast, ToastViewport } from '../utils/toast'
 import { useT, useLoginMobile } from '../utils/helpers'
 import LoginSkeleton from '../components/LoginSkeleton'
 import Modal from '../components/Modal'
@@ -241,7 +241,10 @@ export default function Login() {
   }
 
   return (
-    <div style={{ minHeight:'100vh', display:'flex', flexDirection:isMobile?'column':'row', background:'var(--bg)', overflow:isMobile?'visible':'hidden' }}>
+    <div style={{ minHeight:'100vh', display:'flex', flexDirection:isMobile?'column':'row', background:'var(--bg)', overflow:isMobile?'visible':'hidden', position:'relative' }}>
+      {/* No sidebar on this page, so "the main content area" is just the
+          whole screen. */}
+      <ToastViewport bottomOffset={24}/>
 
       {/* Left panel — branding (hidden entirely below 768px) */}
       {!isMobile && (

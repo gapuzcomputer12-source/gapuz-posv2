@@ -7,6 +7,12 @@ import Modal from './Modal'
 
 const READER_ID = 'scan-input-camera-reader'
 
+// Border-flash color per result tone — richFeedback mode only (see submit()
+// below). 'duplicate' covers an "already in cart" style result; anything
+// else falls back to the plain ok/!ok green/red a caller not using tones
+// still gets.
+const FLASH_COLOR = { success: 'var(--green)', duplicate: 'var(--yellow)', error: 'var(--red)' }
+
 // Full-screen camera scanner used by ScanInput's "Scan with camera" button.
 // Tuned for the EMEET 4K AF USB webcam this app is used with, but any
 // getUserMedia camera works — videoConstraints just ask for the best feed
@@ -118,13 +124,23 @@ function CameraScanner({ onResult, onCancel }) {
 // that submits on Enter already works with it for free — the camera button
 // is the fallback for devices without a USB scanner attached.
 //
-// onScan(trimmedValue) may return a result ({ok, message}) synchronously or
-// as a Promise; if it does, that result is shown as brief inline feedback
-// under the input. Returning nothing just submits silently.
+// onScan(trimmedValue) may return a result ({ok, message}, optionally with
+// a `tone` of 'success'/'duplicate'/'error') synchronously or as a
+// Promise; if it does, that result is shown as brief inline feedback under
+// the input. Returning nothing just submits silently.
+//
+// richFeedback opts into a different contract for one caller (POS's main
+// search/scan input) that wants its own richer result pill instead of this
+// component's plain text line: when true, the text feedback below is
+// suppressed entirely, the result is instead handed to onResult(result),
+// and the input's border still gets a brief 600ms flash in the result's
+// tone color. Every other ScanInput usage leaves richFeedback/onResult
+// unset and is completely unaffected by any of this.
 export default function ScanInput({
   onScan, onChange, value: controlledValue, placeholder = 'Scan or type a code, then Enter…',
   autoFocus = true, clearOnScan = true, disabled = false, style, inputRef: externalRef,
   submitLabel = 'Search', submitIcon: SubmitIcon = Search,
+  richFeedback = false, onResult,
 }) {
   const isControlled = controlledValue !== undefined
   const [internalValue, setInternalValue] = useState('')
@@ -133,12 +149,14 @@ export default function ScanInput({
   const [feedback, setFeedback] = useState(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [borderFlash, setBorderFlash] = useState(null)
   const ownRef = useRef()
   const inputRef = externalRef || ownRef
   const feedbackTimer = useRef()
+  const flashTimer = useRef()
   const { isMobile } = useBreakpoint()
 
-  useEffect(() => () => clearTimeout(feedbackTimer.current), [])
+  useEffect(() => () => { clearTimeout(feedbackTimer.current); clearTimeout(flashTimer.current) }, [])
 
   // Shared by the Enter key, the camera result, and the submit button below
   // — one lookup/validate path no matter how the code got into the input.
@@ -151,9 +169,17 @@ export default function ScanInput({
     const result = await onScan?.(trimmed)
     setSubmitting(false)
     if (result) {
-      setFeedback(result)
-      clearTimeout(feedbackTimer.current)
-      feedbackTimer.current = setTimeout(() => setFeedback(null), 2500)
+      if (richFeedback) {
+        const tone = result.tone || (result.ok ? 'success' : 'error')
+        clearTimeout(flashTimer.current)
+        setBorderFlash(tone)
+        flashTimer.current = setTimeout(() => setBorderFlash(null), 600)
+        onResult?.(result)
+      } else {
+        setFeedback(result)
+        clearTimeout(feedbackTimer.current)
+        feedbackTimer.current = setTimeout(() => setFeedback(null), 2500)
+      }
     }
     inputRef.current?.focus()
   }
@@ -174,7 +200,8 @@ export default function ScanInput({
           </div>
           <input
             ref={inputRef} autoFocus={autoFocus} disabled={disabled} className="input-field"
-            style={{ width: '100%', paddingLeft: 40 }} placeholder={placeholder} value={value}
+            style={{ width: '100%', paddingLeft: 40, ...(borderFlash ? { borderColor: FLASH_COLOR[borderFlash] } : {}) }}
+            placeholder={placeholder} value={value}
             onChange={handleChange} onKeyDown={handleKeyDown}
           />
         </div>
@@ -193,7 +220,7 @@ export default function ScanInput({
           <Camera size={14} />
         </button>
       </div>
-      {feedback && (
+      {!richFeedback && feedback && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 600, color: feedback.ok ? 'var(--green)' : 'var(--red)' }}>
           {feedback.ok ? <Check size={13} /> : <X size={13} />}{feedback.message}
         </div>

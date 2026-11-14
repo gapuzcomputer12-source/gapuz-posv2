@@ -1,11 +1,14 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Package, PauseCircle, Barcode, Wrench } from 'lucide-react'
 import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppStore, useCategoryStore, lookupSerial } from '../store'
-import { useToast } from '../utils/toast'
+import { useToast, ToastViewport } from '../utils/toast'
 import { useT, useKeyboardShortcuts, useBreakpoint, peso, stockStatus, categoryIcon, BADGE_SWATCHES } from '../utils/helpers'
 import Cart from '../components/Cart'
 import ScanInput from '../components/ScanInput'
+import ScanResultPill from '../components/ScanResultPill'
 import Modal from '../components/Modal'
+import { playScanBeep } from '../utils/beep'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
@@ -87,49 +90,106 @@ export default function POS() {
   const [serialPrompt, setSerialPrompt] = useState(null) // product awaiting a serial scan
   const [promptScanned, setPromptScanned] = useState([])
   const searchRef = useRef()
+  const [searchParams] = useSearchParams()
+
+  // Lets the Cashier Dashboard's "Held Orders" card deep-link straight into
+  // the Holds panel (navigate('/pos?holds=1')) instead of just landing on
+  // POS and leaving the cashier to find the Holds button themselves.
+  useEffect(() => { if (searchParams.get('holds') === '1') setShowHolds(true) }, [])
+
+  // ── Scan result pill + cart-line highlight (search/scan input only) ──
+  // scanResult drives ScanResultPill; addedFlash drives Cart's brief
+  // highlight on the row a scan just added to. Both are single values
+  // (not arrays) so a new scan always replaces whatever was showing —
+  // no stacking.
+  const [scanResult, setScanResult] = useState(null)
+  const [addedFlash, setAddedFlash] = useState(null)
+  const scanResultTimer = useRef()
+  useEffect(() => () => clearTimeout(scanResultTimer.current), [])
+
+  const dismissScanResult = useCallback(() => {
+    clearTimeout(scanResultTimer.current)
+    setScanResult(null)
+  }, [])
+
+  // richFeedback result handler for the main search ScanInput — replaces
+  // the toast that used to fire on a scan-add. success auto-hides at
+  // 2.5s, duplicate ("already in cart") at 3.5s; errors stay until the
+  // next scan (which calls this again and replaces scanResult outright)
+  // or until dismissScanResult is clicked.
+  const handleScanResult = useCallback((result) => {
+    clearTimeout(scanResultTimer.current)
+    setScanResult(result)
+    playScanBeep(result.tone === 'success' ? 'success' : result.tone === 'error' ? 'error' : null)
+    if (result.tone === 'success') {
+      scanResultTimer.current = setTimeout(() => setScanResult(null), 2500)
+      if (result.product) setAddedFlash({ id: result.product.id, ts: Date.now() })
+    } else if (result.tone === 'duplicate') {
+      scanResultTimer.current = setTimeout(() => setScanResult(null), 3500)
+    }
+  }, [])
 
   // Validates a scanned serial against this product specifically (used both
   // by the grid "scan serial" prompt and, implicitly, the search box below).
+  // Returns a richer result (tone/product/serial/price) than a plain
+  // {ok,message} now — ScanResultPill (search box) uses the extra fields;
+  // handlePromptScan below only ever looked at `ok`, so it's unaffected.
   const addBySerial = useCallback(async (code, product, prefetchedRow) => {
     const row = prefetchedRow || await lookupSerial(code)
-    if (!row) return { ok:false, message:'Serial not found' }
-    if (product && row.productId !== product.id) return { ok:false, message:'Serial belongs to a different product' }
-    if (row.status !== 'In Stock') return { ok:false, message:`Serial is ${row.status}` }
-    if (items.some(i => i.serials?.includes(code))) return { ok:false, message:'Serial already in cart' }
+    if (!row) return { ok:false, tone:'error', message:`Serial not found: ${code}` }
+    if (product && row.productId !== product.id) return { ok:false, tone:'error', message:'Serial belongs to a different product' }
+    if (row.status !== 'In Stock') {
+      const message = row.status === 'Sold' ? 'Already sold' : row.status === 'Defective' ? 'Marked Defective' : `Serial is ${row.status}`
+      return { ok:false, tone:'error', message }
+    }
     const matched = product || products.find(p => p.id === row.productId)
-    if (!matched) return { ok:false, message:'Product not found' }
+    // Checked after resolving `matched` (not before) only so the
+    // "already in cart" message can name the product — the condition
+    // itself, and where it sits in the overall validation order, is
+    // unchanged.
+    if (items.some(i => i.serials?.includes(code))) {
+      return { ok:false, tone:'duplicate', message:`Already in cart: ${matched?.name || 'Item'} · SN ${code}`, product:matched, serial:code }
+    }
+    if (!matched) return { ok:false, tone:'error', message:'Product not found' }
     addSerialItem(matched, code)
-    toast(`${matched.name} added (SN ${code})`,'success')
-    return { ok:true, message:'Added' }
-  },[items,products,addSerialItem,toast])
+    return { ok:true, tone:'success', message:'Added', product:matched, serial:code, price:matched.price }
+  },[items,products,addSerialItem])
 
   const handleAdd = useCallback(product => {
     if (product.hasSerial) { setPromptScanned([]); setSerialPrompt(product); return }
     const ok = addItem(product)
-    if(ok) toast(product.name+' added','success')
+    if(ok) toast(product.name+' added','success',1500)
     else   toast(t('out_of_stock'),'error')
   },[addItem,toast,t])
 
   // Search-box scan handler: a matching In Stock serial wins first, then a
-  // plain barcode match, otherwise nothing was found.
+  // plain barcode match, otherwise nothing was found. Feedback for this
+  // path is the ScanResultPill (see handleScanResult above) — no toast.
   const handleScan = useCallback(async (code) => {
     const row = await lookupSerial(code)
     if (row) return addBySerial(code, products.find(p=>p.id===row.productId), row)
     const bc = products.find(p => (p.barcode||'').toLowerCase() === code.toLowerCase())
     if (bc) {
-      if (bc.hasSerial) { setPromptScanned([]); setSerialPrompt(bc); return { ok:false, message:'Scan a serial for this product' } }
+      if (bc.hasSerial) { setPromptScanned([]); setSerialPrompt(bc); return { ok:false, tone:'error', message:'Scan a serial for this product' } }
       const ok = addItem(bc)
-      if (ok) { toast(bc.name+' added','success'); return { ok:true, message:'Added' } }
-      toast(t('out_of_stock'),'error'); return { ok:false, message:'Out of stock' }
+      if (ok) return { ok:true, tone:'success', message:'Added', product:bc, price:bc.price }
+      return { ok:false, tone:'error', message:t('out_of_stock') }
     }
-    return { ok:false, message:'No product or serial found' }
-  },[products,addBySerial,addItem,toast,t])
+    return { ok:false, tone:'error', message:'No product or serial found' }
+  },[products,addBySerial,addItem,t])
 
+  // Serial-prompt modal ("Scan Serial" for a serialized product added from
+  // the grid) — untouched by the search box's new pill; keeps its own
+  // toast exactly as before (addBySerial no longer toasts itself, so this
+  // is now the only place that does for this path).
   const handlePromptScan = useCallback(async (code) => {
     const result = await addBySerial(code, serialPrompt)
-    if (result.ok) setPromptScanned(list => [...list, code])
+    if (result.ok) {
+      setPromptScanned(list => [...list, code])
+      toast(`${result.product?.name ?? serialPrompt?.name} added (SN ${code})`,'success',1500)
+    }
     return result
-  },[addBySerial,serialPrompt])
+  },[addBySerial,serialPrompt,toast])
 
   const handleHold = () => {
     if(!items.length) return
@@ -156,16 +216,20 @@ export default function POS() {
   ])
 
   return (
-    <div style={{display:'flex',flexDirection:isMobile?'column':'row',height:'100%',overflow:'hidden'}}>
-      {/* LEFT */}
-      <div style={{flex:isMobile?'0 0 56%':1,minHeight:0,display:'flex',flexDirection:'column',overflow:'hidden',padding:isMobile?'12px':16,gap:12}}>
+    <div style={{display:'flex',flexDirection:isMobile?'column':'row',height:'100%',overflow:'hidden',position:'relative'}}>
+      {/* LEFT — position:relative so the desktop toast viewport below can
+          center itself over just this pane (excludes the cart panel). */}
+      <div style={{flex:isMobile?'0 0 56%':1,minHeight:0,display:'flex',flexDirection:'column',overflow:'hidden',padding:isMobile?'12px':16,gap:12,position:'relative'}}>
         {/* Search row */}
         <div style={{display:'flex',gap:8,flexShrink:0}}>
-          <div style={{flex:1}}>
+          {/* position:relative so ScanResultPill (position:absolute) overlays
+              the gap above the category chips instead of pushing them down. */}
+          <div style={{flex:1,position:'relative'}}>
             <ScanInput inputRef={searchRef} autoFocus={false} style={{gap:0}}
               placeholder={t('search_product')+'  (/ to focus, or scan)'}
               value={search} onChange={setSearch}
-              onScan={handleScan}/>
+              onScan={handleScan} richFeedback onResult={handleScanResult}/>
+            <ScanResultPill result={scanResult} onDismiss={dismissScanResult}/>
           </div>
           <select className="select-field" style={{width:140}} value={sortBy} onChange={e=>setSortBy(e.target.value)}>
             <option value="">Sort by…</option>
@@ -222,14 +286,24 @@ export default function POS() {
             ))}
           </div>
         </div>
+
+        {/* Desktop: centered over just this product-grid pane, excluding
+            the cart panel entirely (it's a sibling, not inside this div). */}
+        {!isMobile && <ToastViewport bottomOffset={24}/>}
       </div>
 
       {/* RIGHT: Cart */}
       <div style={isMobile
         ? {flex:'1 1 44%',minHeight:0,width:'100%',overflow:'hidden'}
         : {width:340,flexShrink:0,height:'100%',overflow:'hidden'}}>
-        <Cart products={products} customers={customers}  onHold={handleHold}/>
+        <Cart products={products} customers={customers}  onHold={handleHold} addedFlash={addedFlash}/>
       </div>
+
+      {/* Mobile: the product pane above is only ~56% height (cart sits
+          below it), so this is placed against the OUTER wrapper instead,
+          which spans the full height — bottom:110 clears the stacked
+          cart's checkout bar rather than landing partway up the page. */}
+      {isMobile && <ToastViewport bottomOffset={110}/>}
 
       {/* Holds Modal */}
       {showHolds&&(

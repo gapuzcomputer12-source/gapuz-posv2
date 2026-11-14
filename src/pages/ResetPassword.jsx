@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Check, X, Eye, EyeOff } from 'lucide-react'
 import { useAuthStore } from '../store'
-import { useToast } from '../utils/toast'
+import { useToast, ToastViewport } from '../utils/toast'
 import { supabase } from '../lib/supabaseClient'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { PASSWORD_RULES, isPasswordStrong } from '../utils/helpers'
@@ -97,7 +97,10 @@ export default function ResetPassword() {
   }
 
   return (
-    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', padding:16 }}>
+    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', padding:16, position:'relative' }}>
+      {/* No sidebar on this page, so "the main content area" is just the
+          whole screen. */}
+      <ToastViewport bottomOffset={24}/>
       <div className="card animate-scale-in" style={{ width:'min(380px,92vw)', padding:32 }}>
 
         {status==='verifying' && (

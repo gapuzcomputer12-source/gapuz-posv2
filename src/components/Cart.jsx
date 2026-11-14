@@ -11,7 +11,7 @@ import Modal from './Modal'
 
 const PAY = [{id:'Cash',label:'Cash',icon:Banknote},{id:'GCash',label:'GCash',icon:Smartphone}]
 
-export default function Cart({ products, customers, onHold }) {
+export default function Cart({ products, customers, onHold, addedFlash }) {
   const { items, payMethod, customerId, splitMode, split1Pay, split2Pay, split1Amt,
           removeItem, removeSerialFromItem, setQty, setItemNote, clearCart, setPayMethod, setCustomer,
           setSplitMode, setSplit1Pay, setSplit2Pay, setSplit1Amt, getTotals } = useCartStore()
@@ -22,6 +22,20 @@ export default function Cart({ products, customers, onHold }) {
   const toast = useToast()
   const t     = useT()
   const { isMobile } = useBreakpoint()
+
+  // Pulses the row for whichever product a scan just added (see POS.jsx's
+  // handleScanResult) — addedFlash is a fresh {id, ts} object every time,
+  // even for the same product id twice in a row, so a rapid repeat scan
+  // still restarts the animation instead of being a no-op React bails out
+  // of (setting state to an unchanged value doesn't trigger a re-render).
+  const [highlightId, setHighlightId] = useState(null)
+  useEffect(() => {
+    if (!addedFlash) return
+    setHighlightId(null)
+    const raf = requestAnimationFrame(() => setHighlightId(addedFlash.id))
+    const timer = setTimeout(() => setHighlightId(null), 1500)
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer) }
+  }, [addedFlash])
 
   const [cashGiven,   setCashGiven]   = useState('')
   const [checkoutOpen, setCheckoutOpen] = useState(false)
@@ -42,12 +56,17 @@ export default function Cart({ products, customers, onHold }) {
   const [checkingOut, setCheckingOut] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState(null)
   const [noteDraft, setNoteDraft] = useState('')
+  // Ref guard, not just `checkingOut` state — two rapid clicks on Complete
+  // Payment can both pass a state check before React re-renders the
+  // disabled button; the ref is checked and set synchronously so only the
+  // first click's request ever fires.
+  const submittingRef = useRef(false)
 
   const openCheckout = () => { if(!items.length) return; setStep('method'); setCheckoutOpen(true) }
   const cancelCheckout = () => setCheckoutOpen(false)
 
   const handleCompletePayment = async () => {
-    if(checkingOut) return
+    if(submittingRef.current) return
     if(!splitMode&&payMethod==='Cash'){
       if(!cashGiven.trim()){toast('Please enter the cash given','error');return}
       if(parseFloat(cashGiven)<totalInt){toast('Cash given is less than total!','error');return}
@@ -58,50 +77,55 @@ export default function Cart({ products, customers, onHold }) {
     const badLine = items.find(i=>i.hasSerial && (i.serials?.length||0)!==i.qty)
     if(badLine){ toast(`${badLine.name} is missing a scanned serial for one of its units`,'error'); return }
 
-    setCheckingOut(true)
-    setStep('processing')
-    const payDesc = splitMode?`${split1Pay}+${split2Pay}`:payMethod
-    const [txn] = await Promise.all([
-      addTransaction({
-        customerName: cust?cust.name:'Walk-in',
-        customerId:   customerId||null,
-        payment:      payDesc,
-        subtotal, vat, total:totalInt,
-        cashGiven:    payMethod==='Cash'?parseFloat(cashGiven):0,
-        status:       'Completed',
-        cashierName:  user?.user_metadata?.name||'Cashier',
-        items:        [...items],
-      }),
-      new Promise(r=>setTimeout(r,650)),
-    ])
-    if(!txn) { setCheckingOut(false); toast('Checkout failed — please try again','error'); setStep('method'); return }
+    submittingRef.current = true
+    try {
+      setCheckingOut(true)
+      setStep('processing')
+      const payDesc = splitMode?`${split1Pay}+${split2Pay}`:payMethod
+      const [txn] = await Promise.all([
+        addTransaction({
+          customerName: cust?cust.name:'Walk-in',
+          customerId:   customerId||null,
+          payment:      payDesc,
+          subtotal, vat, total:totalInt,
+          cashGiven:    payMethod==='Cash'?parseFloat(cashGiven):0,
+          status:       'Completed',
+          cashierName:  user?.user_metadata?.name||'Cashier',
+          items:        [...items],
+        }),
+        new Promise(r=>setTimeout(r,650)),
+      ])
+      if(!txn) { setCheckingOut(false); toast('Checkout failed — please try again','error'); setStep('method'); return }
 
-    // Serials are stamped Sold BEFORE stock is deducted — if this fails,
-    // the sale never actually happened, so it's voided and nothing else
-    // (stock, loyalty points) should run.
-    const serializedItems = items.filter(i=>i.hasSerial && i.serials?.length)
-    if(serializedItems.length){
-      const { error: serialErr } = await supabase.rpc('mark_serials_sold', {
-        p_transaction_id: txn.id,
-        p_items: serializedItems.map(i=>({ product_id:i.id, serials:i.serials })),
-      })
-      if(serialErr){
-        await supabase.rpc('void_failed_sale', { p_transaction_id: txn.id })
-        setCheckingOut(false)
-        toast(`Checkout failed: ${serialErr.message}`,'error')
-        setStep('method')
-        return
+      // Serials are stamped Sold BEFORE stock is deducted — if this fails,
+      // the sale never actually happened, so it's voided and nothing else
+      // (stock, loyalty points) should run.
+      const serializedItems = items.filter(i=>i.hasSerial && i.serials?.length)
+      if(serializedItems.length){
+        const { error: serialErr } = await supabase.rpc('mark_serials_sold', {
+          p_transaction_id: txn.id,
+          p_items: serializedItems.map(i=>({ product_id:i.id, serials:i.serials })),
+        })
+        if(serialErr){
+          await supabase.rpc('void_failed_sale', { p_transaction_id: txn.id })
+          setCheckingOut(false)
+          toast(`Checkout failed: ${serialErr.message}`,'error')
+          setStep('method')
+          return
+        }
       }
-    }
 
-    setCheckingOut(false)
-    deductStock(items)
-    if(cust) addPoints(cust.id, totalInt)
-    setLastTxn({...txn})
-    toast(`${t('payment_success')} ${fmtTxnId(txn.id)} — ${peso(totalInt)}`,'success')
-    if(!splitMode&&payMethod==='Cash'&&change>0){ setChangeDue(change); setChangeAcked(false) }
-    else { setReceiptPrinted(false); setChangeAcked(true) }
-    setStep('success')
+      setCheckingOut(false)
+      deductStock(items)
+      if(cust) addPoints(cust.id, totalInt)
+      setLastTxn({...txn})
+      toast(`${t('payment_success')} ${fmtTxnId(txn.id)} — ${peso(totalInt)}`,'success')
+      if(!splitMode&&payMethod==='Cash'&&change>0){ setChangeDue(change); setChangeAcked(false) }
+      else { setReceiptPrinted(false); setChangeAcked(true) }
+      setStep('success')
+    } finally {
+      submittingRef.current = false
+    }
   }
 
   const [receiptPrinted, setReceiptPrinted] = useState(false)
@@ -154,7 +178,7 @@ export default function Cart({ products, customers, onHold }) {
           : items.map(item=>{
             const prod = products.find(p=>p.id===item.id)
             return (
-              <div key={item.id} style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:10,padding:'10px 12px',marginBottom:6}}>
+              <div key={item.id} className={item.id===highlightId?'cart-line-flash':undefined} style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:10,padding:'10px 12px',marginBottom:6}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8,marginBottom:8}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:8,fontSize:12,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
