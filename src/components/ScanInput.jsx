@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, X, Check, AlertTriangle } from 'lucide-react'
+import { Camera, X, Check, AlertTriangle, Search } from 'lucide-react'
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 import { acquireCamera, releaseCamera } from '../utils/cameraLock'
+import { useBreakpoint } from '../utils/helpers'
 import Modal from './Modal'
 
 const READER_ID = 'scan-input-camera-reader'
@@ -123,6 +124,7 @@ function CameraScanner({ onResult, onCancel }) {
 export default function ScanInput({
   onScan, onChange, value: controlledValue, placeholder = 'Scan or type a code, then Enter…',
   autoFocus = true, clearOnScan = true, disabled = false, style, inputRef: externalRef,
+  submitLabel = 'Search', submitIcon: SubmitIcon = Search,
 }) {
   const isControlled = controlledValue !== undefined
   const [internalValue, setInternalValue] = useState('')
@@ -130,17 +132,24 @@ export default function ScanInput({
   const setValue = (v) => { if (!isControlled) setInternalValue(v); onChange?.(v) }
   const [feedback, setFeedback] = useState(null)
   const [cameraOpen, setCameraOpen] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const ownRef = useRef()
   const inputRef = externalRef || ownRef
   const feedbackTimer = useRef()
+  const { isMobile } = useBreakpoint()
 
   useEffect(() => () => clearTimeout(feedbackTimer.current), [])
 
+  // Shared by the Enter key, the camera result, and the submit button below
+  // — one lookup/validate path no matter how the code got into the input.
   const submit = async (raw) => {
+    if (submitting) return
     const trimmed = (raw || '').trim()
     if (!trimmed) return
     if (clearOnScan) setValue('')
+    setSubmitting(true)
     const result = await onScan?.(trimmed)
+    setSubmitting(false)
     if (result) {
       setFeedback(result)
       clearTimeout(feedbackTimer.current)
@@ -152,6 +161,7 @@ export default function ScanInput({
   const handleChange = (e) => setValue(e.target.value)
   const handleKeyDown = (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(value) } }
   const handleCameraResult = (code) => { setCameraOpen(false); submit(code) }
+  const submitDisabled = disabled || submitting || !value.trim()
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, ...style }}>
@@ -168,6 +178,15 @@ export default function ScanInput({
             onChange={handleChange} onKeyDown={handleKeyDown}
           />
         </div>
+        <button type="button" onClick={() => submit(value)} disabled={submitDisabled}
+          title={submitLabel}
+          className="btn-primary"
+          style={{ padding: isMobile ? '0 12px' : '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12, whiteSpace: 'nowrap' }}>
+          {submitting
+            ? <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-9-9" /></svg>
+            : <SubmitIcon size={14} />}
+          {!isMobile && submitLabel}
+        </button>
         <button type="button" onClick={() => setCameraOpen(true)} disabled={disabled}
           title="Scan with camera"
           style={{ padding: '0 14px', borderRadius: 8, border: '1px solid var(--border2)', background: 'var(--bg3)', color: 'var(--text2)', cursor: disabled ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600 }}>

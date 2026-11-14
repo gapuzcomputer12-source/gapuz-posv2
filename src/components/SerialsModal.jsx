@@ -70,7 +70,7 @@ export default function SerialsModal({ product, onClose }) {
         <div style={{ overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div>
             <div className="section-title" style={{ marginBottom: 8 }}>Add Serials</div>
-            <ScanInput placeholder="Scan or type a serial, then Enter…" onScan={handleScanToAdd} clearOnScan />
+            <ScanInput placeholder="Scan or type a serial, then Enter…" onScan={handleScanToAdd} clearOnScan submitLabel="Add" submitIcon={Plus} />
             {pending.length > 0 && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
