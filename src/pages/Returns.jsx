@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, Fragment } from 'react'
+import { useState, useMemo, useEffect, useRef, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { differenceInCalendarDays } from 'date-fns'
 import { RefreshCw, ClipboardList, Clock, CheckCircle2, Eye, Package, AlertTriangle, CheckCircle, Barcode, Check, Info } from 'lucide-react'
@@ -54,6 +54,16 @@ export default function Returns() {
   // thumbnails) whenever the wizard resets.
   const [evidencePhotos, setEvidencePhotos] = useState([])
   const [photoPickerKey, setPhotoPickerKey] = useState(0)
+  // One id per form-open (set in handleLookup, when step 2 actually opens),
+  // reused across every submit attempt for that same form — lets
+  // create_return recognize a spam-clicked retry and return the existing
+  // row instead of inserting a duplicate (add_submit_idempotency_and_dup_
+  // guards.sql). submittingRef is a ref, not just `submitting` state,
+  // because two rapid clicks can both pass a state check before React
+  // re-renders the disabled button.
+  const [clientRequestId, setClientRequestId] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
 
   const daysSince = selectedSale ? differenceInCalendarDays(new Date(), new Date(selectedSale.createdAt)) : null
   const expired = daysSince != null && daysSince > SALE_ADJUSTMENT_DAYS
@@ -129,6 +139,7 @@ export default function Returns() {
     const init = {}
     sale.items.forEach(item => { init[item.itemId] = { selected: false, qty: 1, selectedSerials: [] } })
     setReturnItems(init)
+    setClientRequestId(crypto.randomUUID())
     setStep(2)
     return { ok: true, message: `Found ${sale.id ? `#${String(sale.id).padStart(4, '0')}` : 'sale'}` }
   }
@@ -174,28 +185,37 @@ export default function Returns() {
 
   const handleSubmit = async () => {
     if (expired) return toast('Return period expired for this sale', 'error')
-    const items = selectedSale.items
-      .filter(item => returnItems[item.itemId]?.selected)
-      .map(item => {
-        const ri = returnItems[item.itemId]
-        const serials = item.serials.length > 0 ? ri.selectedSerials : []
-        const qty = serials.length > 0 ? serials.length : ri.qty
-        return { item_id: item.itemId, product_id: item.productId, name: item.name, price: item.price, costPrice: item.costPrice, qty, serials }
-      })
+    if (submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    try {
+      const items = selectedSale.items
+        .filter(item => returnItems[item.itemId]?.selected)
+        .map(item => {
+          const ri = returnItems[item.itemId]
+          const serials = item.serials.length > 0 ? ri.selectedSerials : []
+          const qty = serials.length > 0 ? serials.length : ri.qty
+          return { item_id: item.itemId, product_id: item.productId, name: item.name, price: item.price, costPrice: item.costPrice, qty, serials }
+        })
 
-    const { id, error } = await submitReturn({
-      transactionId: selectedSale.id,
-      customerName: selectedSale.customerName || 'Walk-in',
-      reason: details.reason,
-      method: details.method,
-      notes: details.notes,
-      subtotal, vat, total,
-      items,
-      evidencePhotos,
-    })
-    if (error) return toast(error.message || 'Failed to submit return', 'error')
-    toast(`Return #${String(id).padStart(4, '0')} submitted`, 'success')
-    resetWizard()
+      const { id, error } = await submitReturn({
+        transactionId: selectedSale.id,
+        customerName: selectedSale.customerName || 'Walk-in',
+        reason: details.reason,
+        method: details.method,
+        notes: details.notes,
+        subtotal, vat, total,
+        items,
+        evidencePhotos,
+        clientRequestId: clientRequestId,
+      })
+      if (error) return toast(error.message || 'Failed to submit return', 'error')
+      toast(`Return #${String(id).padStart(4, '0')} submitted`, 'success')
+      resetWizard()
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
   }
 
   const handleApprove = async (r, conditions, replacements) => {
@@ -215,6 +235,7 @@ export default function Returns() {
     setDetails({ reason: RETURN_REASONS[0], method: RETURN_METHODS[0], notes: '' })
     setEvidencePhotos([])
     setPhotoPickerKey(k => k + 1)
+    setClientRequestId(null)
   }
 
   const border = '1px solid var(--border)'
@@ -460,9 +481,12 @@ export default function Returns() {
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => setStep(3)} className="btn-secondary" style={{ flex: 1, ...navBtn }}>← Back</button>
-                <button onClick={handleSubmit} disabled={expired} className="btn-primary" style={{ flex: 2, ...navBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, opacity: expired ? 0.5 : 1, cursor: expired ? 'not-allowed' : 'pointer' }}>
-                  <RefreshCw size={14} />Submit Return
+                <button onClick={() => setStep(3)} disabled={submitting} className="btn-secondary" style={{ flex: 1, ...navBtn, opacity: submitting ? 0.6 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}>← Back</button>
+                <button onClick={handleSubmit} disabled={expired || submitting} className="btn-primary" style={{ flex: 2, ...navBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, opacity: (expired || submitting) ? 0.5 : 1, cursor: (expired || submitting) ? 'not-allowed' : 'pointer' }}>
+                  {submitting
+                    ? <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-9-9" /></svg>
+                    : <RefreshCw size={14} />}
+                  {submitting ? 'Submitting…' : 'Submit Return'}
                 </button>
               </div>
             </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Modal from './Modal'
 
 // Shared "why is this being rejected" modal — same quick-pick chips + reason
@@ -24,8 +24,13 @@ export default function RejectReasonModal({ open, onClose, onConfirm, idLabel })
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
+  // Ref guard, not just `saving` state — two rapid clicks on Confirm
+  // Reject can both pass a state check before React re-renders the
+  // disabled button; the ref is checked and set synchronously so only the
+  // first click's request ever fires.
+  const submittingRef = useRef(false)
 
-  useEffect(() => { if (open) { setReason(''); setSaving(false); setErrorMsg('') } }, [open])
+  useEffect(() => { if (open) { setReason(''); setSaving(false); setErrorMsg(''); submittingRef.current = false } }, [open])
 
   if (!open) return null
 
@@ -33,13 +38,18 @@ export default function RejectReasonModal({ open, onClose, onConfirm, idLabel })
   const valid = trimmed.length >= MIN_LEN && trimmed.length <= MAX_LEN
 
   const handleConfirm = async () => {
-    if (!valid || saving) return
+    if (!valid || submittingRef.current) return
+    submittingRef.current = true
     setSaving(true)
     setErrorMsg('')
-    const result = await onConfirm(trimmed)
-    setSaving(false)
-    if (result?.error) { setErrorMsg(result.error.message || 'Failed to reject — please try again'); return }
-    onClose()
+    try {
+      const result = await onConfirm(trimmed)
+      if (result?.error) { setErrorMsg(result.error.message || 'Failed to reject — please try again'); return }
+      onClose()
+    } finally {
+      submittingRef.current = false
+      setSaving(false)
+    }
   }
 
   return (

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Package, Barcode, FileText, Image as ImageIcon, Check, X as XIcon } from 'lucide-react'
 import { useActivityLogStore, useAppStore, getEvidencePhotoUrls } from '../store'
 import { StatusBadge } from './RefundDetailsModal'
@@ -71,6 +71,11 @@ export default function ReturnDetailsModal({ open, onClose, record, isAdmin, onA
   const { logs } = useActivityLogStore()
   const toast = useToast()
   const [processing, setProcessing] = useState('')
+  // Ref guard, not just `processing` state — two rapid clicks on Confirm
+  // Approve can both pass a state check before React re-renders the
+  // disabled button; the ref is checked and set synchronously so only the
+  // first click's request ever fires.
+  const submittingRef = useRef(false)
   const [conditions, setConditions] = useState({})
   const [replacements, setReplacements] = useState({})
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -138,12 +143,18 @@ export default function ReturnDetailsModal({ open, onClose, record, isAdmin, onA
     setConfirmOpen(true)
   }
   const handleConfirmApprove = async () => {
+    if (submittingRef.current) return
+    submittingRef.current = true
     setProcessing('approve')
-    await onApprove(record, conditions, replacements)
-    useActivityLogStore.getState().fetchLogs()
-    setProcessing('')
-    setConfirmOpen(false)
-    onClose()
+    try {
+      await onApprove(record, conditions, replacements)
+      useActivityLogStore.getState().fetchLogs()
+      setConfirmOpen(false)
+      onClose()
+    } finally {
+      submittingRef.current = false
+      setProcessing('')
+    }
   }
   // The actual reject call + validation live in RejectReasonModal; this
   // just forwards the reason and reports success/failure back to it so it
@@ -163,7 +174,7 @@ export default function ReturnDetailsModal({ open, onClose, record, isAdmin, onA
     : record.method === 'Replacement' ? 'Replacement unit(s) will be issued.' : ''
 
   return (
-    <Modal open={open} onClose={onClose} contentStyle={{ width: 'min(720px,94vw)', maxHeight: '90vh' }}>
+    <Modal open={open} onClose={onClose} closeOnBackdrop={!processing} closeOnEsc={!processing} contentStyle={{ width: 'min(720px,94vw)', maxHeight: '90vh' }}>
       <div className="card animate-scale-in" style={{ maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0 }}>

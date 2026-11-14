@@ -50,6 +50,11 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   const { refunds } = useRefundStore()
   const [processing, setProcessing] = useState('')
   const [rejectOpen, setRejectOpen] = useState(false)
+  // Ref guard, not just `processing` state — two rapid clicks on Approve
+  // can both pass a state check before React re-renders the disabled
+  // button; the ref is checked and set synchronously so only the first
+  // click's request ever fires.
+  const submittingRef = useRef(false)
   const printRef = useRef(null)
   const handlePrint = useReactToPrint({ content: () => printRef.current })
 
@@ -81,11 +86,17 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   const MethodIcon = METHOD_ICON[method] || Tag
 
   const handleApproveClick = async () => {
+    if (submittingRef.current) return
+    submittingRef.current = true
     setProcessing('approve')
-    await onApprove(record)
-    useActivityLogStore.getState().fetchLogs()
-    setProcessing('')
-    onClose()
+    try {
+      await onApprove(record)
+      useActivityLogStore.getState().fetchLogs()
+      onClose()
+    } finally {
+      submittingRef.current = false
+      setProcessing('')
+    }
   }
   // The actual reject call + validation live in RejectReasonModal; this
   // just forwards the reason and reports success/failure back to it so it
@@ -97,7 +108,7 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   }
 
   return (
-    <Modal open={open} onClose={onClose} contentStyle={{ width: 'min(720px,94vw)', maxHeight: '90vh' }}>
+    <Modal open={open} onClose={onClose} closeOnBackdrop={!processing} closeOnEsc={!processing} contentStyle={{ width: 'min(720px,94vw)', maxHeight: '90vh' }}>
       <div className="card animate-scale-in" style={{ maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
         {/* Sticky header */}
@@ -262,7 +273,8 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
               <button onClick={() => setRejectOpen(true)} disabled={!!processing} className="btn-danger" style={{ opacity: processing ? .6 : 1 }}>
                 Reject
               </button>
-              <button onClick={handleApproveClick} disabled={!!processing} className="btn-success" style={{ opacity: processing ? .6 : 1 }}>
+              <button onClick={handleApproveClick} disabled={!!processing} className="btn-success" style={{ opacity: processing ? .6 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {processing === 'approve' && <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-9-9" /></svg>}
                 {processing === 'approve' ? 'Approving…' : 'Approve'}
               </button>
             </>

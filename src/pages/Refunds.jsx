@@ -51,6 +51,16 @@ export default function Refunds() {
     method: 'Cash',
     notes: '',
   })
+  // One id per form-open (set in handleLookup, when step 2 actually opens),
+  // reused across every submit attempt for that same form — lets
+  // create_refund recognize a spam-clicked retry and return the existing
+  // row instead of inserting a duplicate (add_submit_idempotency_and_dup_
+  // guards.sql). submittingRef is a ref, not just `submitting` state,
+  // because two rapid clicks can both pass a state check before React
+  // re-renders the disabled button.
+  const [clientRequestId, setClientRequestId] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
 
   // ── Stats ─────────────────────────────────────────────────
   const pendingCount = useMemo(() => refunds.filter(r => r.status === 'Pending').length, [refunds])
@@ -155,6 +165,7 @@ export default function Refunds() {
     if (totalSettledAmount(txn.id, refunds, returns) >= txn.total) return { ok: false, message: 'This transaction has already been fully refunded' }
     setSelectedTxn(txn)
     setDetails({ reason: REFUND_REASONS[0], amount: '', method: 'Cash', notes: '' })
+    setClientRequestId(crypto.randomUUID())
     setStep(2)
     return { ok: true, message: `Found #${String(txn.id).padStart(4, '0')}` }
   }
@@ -169,16 +180,25 @@ export default function Refunds() {
   }
 
   const handleSubmit = async () => {
-    const { error } = await addRefund({
-      transactionId: selectedTxn.id,
-      amount: parseFloat(details.amount),
-      reason: details.reason,
-      refundMethod: details.method,
-      notes: details.notes,
-    })
-    if (error) return toast(error.message || 'Failed to submit refund — please try again', 'error')
-    toast(t('refund_processed'), 'success')
-    resetWizard()
+    if (submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    try {
+      const { error } = await addRefund({
+        transactionId: selectedTxn.id,
+        amount: parseFloat(details.amount),
+        reason: details.reason,
+        refundMethod: details.method,
+        notes: details.notes,
+        clientRequestId: clientRequestId,
+      })
+      if (error) return toast(error.message || 'Failed to submit refund — please try again', 'error')
+      toast(t('refund_processed'), 'success')
+      resetWizard()
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
   }
 
   const handleApprove = async (r) => {
@@ -198,6 +218,7 @@ export default function Refunds() {
   const resetWizard = () => {
     setStep(1); setSelectedTxn(null)
     setDetails({ reason: REFUND_REASONS[0], amount: '', method: 'Cash', notes: '' })
+    setClientRequestId(null)
   }
 
   // Reverses this refund's loyalty-points impact on the customer (points,
@@ -411,9 +432,12 @@ export default function Refunds() {
               )}
 
               <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => setStep(2)} className="btn-secondary" style={{ flex: 1, ...navBtn }}>← Back</button>
-                <button onClick={handleSubmit} className="btn-primary" style={{ flex: 2, ...navBtn, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
-                  <RefreshCw size={14}/>Submit Refund
+                <button onClick={() => setStep(2)} disabled={submitting} className="btn-secondary" style={{ flex: 1, ...navBtn, opacity: submitting ? 0.6 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}>← Back</button>
+                <button onClick={handleSubmit} disabled={submitting} className="btn-primary" style={{ flex: 2, ...navBtn, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, opacity: submitting ? 0.6 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}>
+                  {submitting
+                    ? <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-9-9" /></svg>
+                    : <RefreshCw size={14}/>}
+                  {submitting ? 'Submitting…' : 'Submit Refund'}
                 </button>
               </div>
             </div>

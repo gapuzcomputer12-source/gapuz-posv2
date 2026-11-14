@@ -568,18 +568,27 @@ export const useRefundStore = create((set, get) => ({
   // actually enforces the 7-day window and the remaining-amount cap; a
   // raw insert is no longer possible (see add_create_refund_rpc.sql — the
   // old "Allow authenticated insert" policy on refunds is dropped there).
+  //
+  // create_refund is idempotent on data.clientRequestId (see
+  // add_submit_idempotency_and_dup_guards.sql) — a spam-clicked Submit
+  // that fires this twice with the same id gets the same row back the
+  // second time (created: false) instead of a duplicate, so the
+  // 'submitted' activity_log entry below only gets written for the one
+  // request that actually created something.
   addRefund: async (data) => {
-    const { data: refundId, error } = await supabase.rpc('create_refund', {
+    const { data: rows, error } = await supabase.rpc('create_refund', {
       p_transaction_id: data.transactionId,
       p_amount: data.amount,
       p_reason: data.reason,
       p_method: data.refundMethod,
       p_notes: data.notes || null,
+      p_client_request_id: data.clientRequestId || null,
     })
     if (error) return { error }
+    const row = rows?.[0]
     await get().fetchRefunds()
-    logActivity('submitted', 'refund', `#${String(refundId).padStart(4, '0')}`, { total: data.amount })
-    return { id: refundId, error: null }
+    if (row?.created) logActivity('submitted', 'refund', `#${String(row.id).padStart(4, '0')}`, { total: data.amount })
+    return { id: row?.id, error: null }
   },
 
   // Stamps processed_at (approval time, distinct from created_at) when a
@@ -731,8 +740,15 @@ export const useReturnStore = create((set, get) => ({
 
   // Inserts only through create_return (SECURITY DEFINER) — it enforces the
   // 7-day window and the serial/qty validation a raw insert couldn't.
+  //
+  // create_return is idempotent on data.clientRequestId (see
+  // add_submit_idempotency_and_dup_guards.sql) — a spam-clicked Submit
+  // that fires this twice with the same id gets the same row back the
+  // second time (created: false) instead of a duplicate, so the
+  // 'created' activity_log entry below only gets written for the one
+  // request that actually created something.
   submitReturn: async (data) => {
-    const { data: returnId, error } = await supabase.rpc('create_return', {
+    const { data: rows, error } = await supabase.rpc('create_return', {
       p_transaction_id: data.transactionId,
       p_items: data.items,
       p_reason: data.reason,
@@ -742,11 +758,13 @@ export const useReturnStore = create((set, get) => ({
       p_vat: data.vat,
       p_total: data.total,
       p_evidence_photos: data.evidencePhotos || [],
+      p_client_request_id: data.clientRequestId || null,
     })
     if (error) return { error }
+    const row = rows?.[0]
     await get().fetchReturns()
-    logActivity('created', 'return', `#${String(returnId).padStart(4, '0')}`, { total: data.total })
-    return { id: returnId, error: null }
+    if (row?.created) logActivity('created', 'return', `#${String(row.id).padStart(4, '0')}`, { total: data.total })
+    return { id: row?.id, error: null }
   },
 
   // Approval (restock/defective split, Replacement serial swap, and the
