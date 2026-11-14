@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { startOfDay, endOfDay, subDays } from 'date-fns'
-import { Hand, Clock, ChevronRight, Trophy, Package, Receipt, ClipboardList, Wallet, Calculator } from 'lucide-react'
-import { useTransactionStore, useProductStore, useAuthStore, useRefundStore, useReturnStore } from '../store'
+import { Hand, Clock, ChevronRight, Trophy, Package, Receipt, ClipboardList, Wallet, Calculator, PauseCircle } from 'lucide-react'
+import { useTransactionStore, useProductStore, useAuthStore, useRefundStore, useReturnStore, useHoldStore, useAppStore } from '../store'
 import { useT, peso, pesoCompact, paymentDisplay, fmtDate } from '../utils/helpers'
 import { computeSalesMetrics, getDailySeries } from '../utils/salesMetrics'
 import { StatusBadge } from '../components/RefundDetailsModal'
@@ -11,6 +11,9 @@ import StatCard from '../components/StatCard'
 import ChartCard from '../components/ChartCard'
 import RankedList from '../components/RankedList'
 import DonutCard from '../components/DonutCard'
+import Modal from '../components/Modal'
+import Pagination from '../components/Pagination'
+import { usePagination } from '../hooks/usePagination'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
 // No blue anywhere — same payment palette as Reports.jsx.
@@ -45,6 +48,92 @@ function Chip({ tone, label, title, onClick }) {
 
 const SkeletonCard = () => <div className="rpt-card" style={{ padding: 20 }}><div className="skeleton" style={{ height: 90 }} /></div>
 
+// "View all" for the cashier's own refund/return requests — a self-contained
+// modal rather than a navigate() to /refunds or /returns, since those pages
+// list every cashier's requests store-wide, not just the signed-in
+// cashier's. Defined at module scope (not nested inside Dashboard) so its
+// usePagination state isn't torn down every time Dashboard re-renders for
+// an unrelated reason — a component declared inside another component's
+// body is a new type every render, which would reset its own state.
+// Rendered through Modal's portal, which lands OUTSIDE the .rpt-scope div
+// Dashboard renders inside — so this uses the app's normal themeable
+// tokens (var(--text3), .card-surface, etc.), never the --rpt-* variables,
+// which only exist under .rpt-scope and would resolve to nothing here.
+function MyRequestsModal({ open, onClose, requests, isLight }) {
+  const pg = usePagination(requests, 8)
+  if (!open) return null
+  return (
+    <Modal open onClose={onClose} contentStyle={{ width: 'min(440px,92vw)' }}>
+      <div className="card animate-scale-in" style={{ padding: 24, maxHeight: '75vh', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <ClipboardList size={15} style={{ color: 'var(--accent)' }} />My Requests ({requests.length})
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 20 }}>×</button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {requests.length === 0 ? (
+            <div style={{ textAlign: 'center', color: 'var(--text3)', padding: 32 }}>
+              <ClipboardList size={30} style={{ opacity: .2, marginBottom: 8 }} /><div>No requests yet.</div>
+            </div>
+          ) : pg.pageItems.map(r => (
+            <div key={`${r.kind}-${r.id}`} className="card-surface" style={{ padding: 12, marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{r.kind} #{String(r.id).padStart(4, '0')}</span>
+                <StatusBadge status={r.status} isLight={isLight} />
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--text3)', marginTop: 4 }}>{fmtDate(r.createdAt)} · {peso(r.total)}</div>
+              {r.status === 'Rejected' && r.rejectionReason && (
+                <div style={{ fontSize: 11.5, color: 'var(--red)', fontStyle: 'italic', marginTop: 3 }}>Reason: {r.rejectionReason}</div>
+              )}
+            </div>
+          ))}
+        </div>
+        <Pagination {...pg} />
+      </div>
+    </Modal>
+  )
+}
+
+// "View all" for the cashier's own transactions — same reasoning as
+// MyRequestsModal above (no store-wide page to link to that's still
+// scoped to just this cashier, so a self-contained modal instead).
+function MyTransactionsModal({ open, onClose, transactions }) {
+  const pg = usePagination(transactions, 8)
+  if (!open) return null
+  return (
+    <Modal open onClose={onClose} contentStyle={{ width: 'min(480px,92vw)' }}>
+      <div className="card animate-scale-in" style={{ padding: 24, maxHeight: '75vh', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Receipt size={15} style={{ color: 'var(--accent)' }} />My Transactions ({transactions.length})
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 20 }}>×</button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {transactions.length === 0 ? (
+            <div style={{ textAlign: 'center', color: 'var(--text3)', padding: 32 }}>
+              <Receipt size={30} style={{ opacity: .2, marginBottom: 8 }} /><div>No transactions yet.</div>
+            </div>
+          ) : pg.pageItems.map(tx => (
+            <div key={tx.id} className="card-surface" style={{ padding: 12, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)' }}>#{String(tx.id).padStart(4, '0')}</div>
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{new Date(tx.createdAt).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {tx.customerName || 'Walk-in'}</div>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: 'var(--bg4)', border: '1px solid var(--border2)', color: 'var(--text2)', marginTop: 4 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: paymentColor(tx.payment) }} />{paymentDisplay(tx.payment).label}
+                </span>
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', flexShrink: 0 }}>{peso(tx.total)}</div>
+            </div>
+          ))}
+        </div>
+        <Pagination {...pg} />
+      </div>
+    </Modal>
+  )
+}
+
 export default function Dashboard() {
   useDocumentTitle('Dashboard')
   const transactions = useTransactionStore(s => s.transactions)
@@ -53,11 +142,29 @@ export default function Dashboard() {
   const prodLoading  = useProductStore(s => s.loading)
   const refunds      = useRefundStore(s => s.refunds)
   const returns      = useReturnStore(s => s.returns)
+  const holds        = useHoldStore(s => s.holds)
+  const { theme }    = useAppStore()
   const { user, role } = useAuthStore()
   const isAdmin = role === 'admin'
+  const isLight = theme === 'light'
   const t = useT()
   const navigate = useNavigate()
   const [topMetric, setTopMetric] = useState('qty') // 'qty' | 'revenue'
+  // Cashier-only UI state: the low/out-of-stock chips open a read-only
+  // popover instead of navigating (cashiers can't reach /products, which
+  // is admin-only), and My Requests/My Transactions "View all" open a
+  // modal scoped to just this cashier (see MyRequestsModal/MyTransactionsModal).
+  const [stockPopover, setStockPopover] = useState(null) // 'low' | 'out' | null
+  const stockPopoverRef = useRef(null)
+  const [viewAllRequests, setViewAllRequests] = useState(false)
+  const [viewAllTxns, setViewAllTxns] = useState(false)
+
+  useEffect(() => {
+    if (!stockPopover) return
+    const onClick = e => { if (stockPopoverRef.current && !stockPopoverRef.current.contains(e.target)) setStockPopover(null) }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [stockPopover])
 
   const loading = txLoading || prodLoading
   const now   = new Date()
@@ -130,16 +237,19 @@ export default function Dashboard() {
   const myTodayTxns = useMemo(() => myTxns.filter(tx => { const d = new Date(tx.createdAt); d.setHours(0, 0, 0, 0); return d.getTime() === today.getTime() }), [myTxns, today])
   const myTodayAmount = myTodayTxns.reduce((s, tx) => s + tx.total, 0)
   const myItemsSoldToday = useMemo(() => myTodayTxns.reduce((s, tx) => s + (tx.items || []).reduce((a, i) => a + (isService(i.id) ? 0 : i.qty), 0), 0), [myTodayTxns, products])
-  const myRequests = useMemo(() => {
+  const myRequestsAll = useMemo(() => {
     const mine = [
       ...refunds.filter(r => r.submittedBy === myName).map(r => ({ ...r, kind: 'Refund' })),
       ...returns.filter(r => r.submittedBy === myName).map(r => ({ ...r, kind: 'Return' })),
     ]
-    return mine.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 5)
+    return mine.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
   }, [refunds, returns, myName])
+  const myRequests = useMemo(() => myRequestsAll.slice(0, 5), [myRequestsAll])
 
-  const LinkOut = ({ to, children }) => (
-    <button onClick={() => navigate(to)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--rpt-green)', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3, fontFamily: 'inherit' }}>
+  // `to` navigates (the original/admin usage); `onClick` overrides that for
+  // a caller that wants a local action instead (e.g. opening a modal).
+  const LinkOut = ({ to, onClick, children }) => (
+    <button onClick={onClick || (() => navigate(to))} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--rpt-green)', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3, fontFamily: 'inherit' }}>
       {children}<ChevronRight size={12} />
     </button>
   )
@@ -170,11 +280,30 @@ export default function Dashboard() {
           <span style={{ color: 'var(--rpt-muted)', fontSize: 12.5 }}>{now.toLocaleDateString('en-PH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
         </div>
         {!loading && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {lowStock.length > 0 && <Chip tone="amber" label={`⚠ ${lowStock.length} low stock`} title={namesSummary(lowStock)} onClick={() => navigate('/products?stock=low')} />}
-            {outStock.length > 0 && <Chip tone="red" label={`⛔ ${outStock.length} out of stock`} title={namesSummary(outStock)} onClick={() => navigate('/products?stock=out')} />}
+          <div ref={stockPopoverRef} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', position: 'relative' }}>
+            {/* Admins jump to the Products page (stock=low/out filter already
+                wired there); cashiers can't reach that admin-only page, so
+                the same chip instead opens a small read-only popover here. */}
+            {lowStock.length > 0 && <Chip tone="amber" label={`⚠ ${lowStock.length} low stock`} title={namesSummary(lowStock)} onClick={() => isAdmin ? navigate('/products?stock=low') : setStockPopover(p => p === 'low' ? null : 'low')} />}
+            {outStock.length > 0 && <Chip tone="red" label={`⛔ ${outStock.length} out of stock`} title={namesSummary(outStock)} onClick={() => isAdmin ? navigate('/products?stock=out') : setStockPopover(p => p === 'out' ? null : 'out')} />}
             {isAdmin && pendingTotal > 0 && <Chip tone="amber" label={`⏳ ${pendingTotal} pending approvals`} onClick={() => navigate(pendingRefunds >= pendingReturns ? '/refunds' : '/returns')} />}
             {nothingToFlag && <Chip tone="green" label="✓ All good" />}
+
+            {!isAdmin && stockPopover && (
+              <div className="rpt-card" style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0, padding: 14, zIndex: 20, width: 240, maxHeight: 280, overflowY: 'auto' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--rpt-title)', marginBottom: 8 }}>
+                  {stockPopover === 'low' ? 'Low Stock' : 'Out of Stock'}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {(stockPopover === 'low' ? lowStock : outStock).map(p => (
+                    <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+                      <span style={{ color: 'var(--rpt-body)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                      <span style={{ color: stockPopover === 'low' ? 'var(--rpt-amber)' : 'var(--rpt-red)', fontWeight: 700, flexShrink: 0 }}>{p.stock} left</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -311,7 +440,8 @@ export default function Dashboard() {
 
         <div className="rpt-grid-12">
           <div className="rpt-col-6">
-            <ChartCard title={<><ClipboardList size={14} style={{ color: 'var(--rpt-green)' }} />My Requests</>}>
+            <ChartCard title={<><ClipboardList size={14} style={{ color: 'var(--rpt-green)' }} />My Requests</>}
+              actions={myRequestsAll.length > 5 && <LinkOut onClick={() => setViewAllRequests(true)}>View all</LinkOut>}>
               {myRequests.length === 0 ? <div className="rpt-empty">No requests yet.</div> : (
                 <div className="rpt-simple-list">
                   {myRequests.map(r => (
@@ -332,16 +462,18 @@ export default function Dashboard() {
           </div>
 
           <div className="rpt-col-6">
-            <ChartCard title={<><Receipt size={14} style={{ color: 'var(--rpt-green)' }} />My Recent Transactions</>}>
+            <ChartCard title={<><Receipt size={14} style={{ color: 'var(--rpt-green)' }} />My Recent Transactions</>}
+              actions={myTxns.length > 5 && <LinkOut onClick={() => setViewAllTxns(true)}>View all</LinkOut>}>
               {myTxns.length === 0 ? <div className="rpt-empty">{t('no_data')}</div> : (
                 <div className="rpt-simple-list">
                   {myTxns.slice(0, 5).map(tx => (
                     <div key={tx.id} className="rpt-simple-row">
-                      <div>
+                      <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--rpt-green)' }}>#{String(tx.id).padStart(4, '0')}</div>
                         <div style={{ fontSize: 11.5, color: 'var(--rpt-muted)' }}>{new Date(tx.createdAt).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })} · {tx.customerName || 'Walk-in'}</div>
+                        <span className="rpt-pill rpt-pill-gray" style={{ marginTop: 4 }}><span className="dot" style={{ background: paymentColor(tx.payment) }} />{paymentDisplay(tx.payment).label}</span>
                       </div>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--rpt-title)' }}>{peso(tx.total)}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--rpt-title)', flexShrink: 0 }}>{peso(tx.total)}</div>
                     </div>
                   ))}
                 </div>
@@ -349,6 +481,19 @@ export default function Dashboard() {
             </ChartCard>
           </div>
         </div>
+
+        {/* Held Orders — store-wide (holds carry no cashier/created-by
+            column), hidden entirely when there are none. */}
+        {holds.length > 0 && (
+          <div className="rpt-kpi-row">
+            <StatCard icon={PauseCircle} label="Held Orders" value={holds.length}
+              sub={holds.slice(0, 3).map(h => h.label).join(', ') + (holds.length > 3 ? `, +${holds.length - 3} more` : '')}
+              onClick={() => navigate('/pos?holds=1')} />
+          </div>
+        )}
+
+        <MyRequestsModal open={viewAllRequests} onClose={() => setViewAllRequests(false)} requests={myRequestsAll} isLight={isLight} />
+        <MyTransactionsModal open={viewAllTxns} onClose={() => setViewAllTxns(false)} transactions={myTxns} />
 
       </>}
     </div>
