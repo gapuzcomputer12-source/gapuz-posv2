@@ -100,6 +100,21 @@ export function logActivity(action, entityType, entityLabel, details) {
 
 const LOG_SELECT = 'id:log_id, actorName:actor_name, action, entityType:entity_type, entityLabel:entity_label, details, createdAt:created_at'
 
+// create_refund/create_return are RETURNS TABLE(id, created) functions, so
+// supabase.rpc() normally hands back [{ id, created }] — but PostgREST
+// shapes a set-returning function's result differently depending on how it
+// resolves (a bare scalar, or a single composite row keyed by the function
+// name) across the migrations that have redefined these RPCs over time.
+// Pulling the id out this defensively is what keeps a shape mismatch from
+// silently stringifying into "#[object Object]" in the activity log instead
+// of just failing loudly.
+function getReturnedId(result) {
+  const row = Array.isArray(result) ? result[0] : result
+  if (row == null) return null
+  if (typeof row === 'number') return row
+  return row.id ?? row.refund_id ?? row.return_id ?? row.create_refund ?? row.create_return ?? null
+}
+
 // Fire-and-forget: emails every active admin via the send-low-stock-alert
 // edge function. Call this only at the moment a real decrease lands stock
 // at 1, 2, or 3 (level 'low') or exactly 0 (level 'out') — never on a poll
@@ -586,9 +601,10 @@ export const useRefundStore = create((set, get) => ({
     })
     if (error) return { error }
     const row = rows?.[0]
+    const id = getReturnedId(rows)
     await get().fetchRefunds()
-    if (row?.created) logActivity('submitted', 'refund', `#${String(row.id).padStart(4, '0')}`, { total: data.amount })
-    return { id: row?.id, error: null }
+    if (row?.created) logActivity('submitted', 'refund', `#${String(id).padStart(4, '0')}`, { refund_id: id, total: data.amount })
+    return { id, error: null }
   },
 
   // Stamps processed_at (approval time, distinct from created_at) when a
@@ -762,9 +778,10 @@ export const useReturnStore = create((set, get) => ({
     })
     if (error) return { error }
     const row = rows?.[0]
+    const id = getReturnedId(rows)
     await get().fetchReturns()
-    if (row?.created) logActivity('created', 'return', `#${String(row.id).padStart(4, '0')}`, { total: data.total })
-    return { id: row?.id, error: null }
+    if (row?.created) logActivity('created', 'return', `#${String(id).padStart(4, '0')}`, { return_id: id, total: data.total })
+    return { id, error: null }
   },
 
   // Approval (restock/defective split, Replacement serial swap, and the
