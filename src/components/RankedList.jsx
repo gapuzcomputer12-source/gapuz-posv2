@@ -4,14 +4,14 @@
 // `items`: [{ key, label, value }]. `renderLeft(item)` renders an optional
 // thumbnail/icon before the label. `renderValue(item)` formats the right-
 // hand value (defaults to the raw number).
-export default function RankedList({ items, max, barColor = 'var(--rpt-green)', renderLeft, renderValue, emptyText = 'No data.' }) {
+export default function RankedList({ items, max, barColor = 'var(--rpt-green)', renderLeft, renderValue, emptyText = 'No data.', rankOffset = 0 }) {
   if (!items.length) return <div className="rpt-empty">{emptyText}</div>
   const m = max ?? Math.max(...items.map(i => i.value), 1)
   return (
     <div className="ranked-list">
       {items.map((it, i) => (
         <div key={it.key ?? i} className="ranked-row">
-          <span className="ranked-rank">{i + 1}</span>
+          <span className="ranked-rank">{i + 1 + rankOffset}</span>
           {renderLeft?.(it)}
           <div className="ranked-main">
             <div className="ranked-label" title={it.label}>{it.label}</div>

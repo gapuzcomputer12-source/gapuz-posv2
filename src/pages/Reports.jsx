@@ -43,6 +43,14 @@ const TAB_TITLE = {
   customer:  'Customer Report',
 }
 
+// Sales tab Top/Least Selling cards — count selector pills.
+const COUNT_OPTIONS = [5, 10, 20, 'All'].map(v => ({ value: v, label: String(v) }))
+// Least Selling: a product needs this many days in the system before it's
+// eligible to be ranked, so a brand-new item isn't unfairly flagged as a
+// worst seller just for not having sold anything yet.
+const LEAST_SELLING_MIN_AGE_DAYS = 10
+const LEAST_SELLING_EMPTY_TEXT = `Products need at least ${LEAST_SELLING_MIN_AGE_DAYS} days in the system to be ranked.`
+
 const STATUS_RANK = { 'Reorder now': 0, 'Reorder soon': 1, 'OK': 2, 'No demand': 3 }
 const STATUS_PILL = { 'Reorder now': 'rpt-pill-red', 'Reorder soon': 'rpt-pill-amber', 'OK': 'rpt-pill-green', 'No demand': 'rpt-pill-gray' }
 
@@ -111,6 +119,8 @@ export default function Reports(){
   const [customPopoverOpen, setCustomPopoverOpen] = useState(false)
   const periodRef = useRef(null)
   const [topMetric,  setTopMetric]  = useState('qty') // 'qty' | 'revenue' — Sales tab Top/Least Selling
+  const [topCount,   setTopCount]   = useState(10) // 5 | 10 | 20 | 'All'
+  const [leastCount, setLeastCount] = useState(10) // 5 | 10 | 20 | 'All'
   const [demandStatusFilter, setDemandStatusFilter] = useState('All')
   const [historyType,   setHistoryType]   = useState('All') // All | Returns | Refunds
   const [historyStatus, setHistoryStatus] = useState('All') // All | Pending | Approved | Rejected
@@ -180,13 +190,41 @@ export default function Reports(){
     return m
   },[filtered])
   const topBasis = p => topMetric==='qty' ? p.sold : p.revenue
-  const topProds  = useMemo(()=>Object.values(prodMap).sort((a,b)=>topBasis(b)-topBasis(a)).slice(0,5),[prodMap,topMetric])
-  const leastProds= useMemo(()=>{
-    const all = {...prodMap}
-    products.forEach(p=>{ if(!all[p.name]) all[p.name]={name:p.name,sold:0,revenue:0} })
-    return Object.values(all).sort((a,b)=>topBasis(a)-topBasis(b)).slice(0,5)
-  },[prodMap,products,topMetric])
-  const topMax = topProds[0] ? Math.max(topBasis(topProds[0]),1) : 1
+  // Full ranked lists (not yet sliced to the selected count) — the count
+  // selector and "All" pagination both read from these.
+  const topProdsAll = useMemo(()=>Object.values(prodMap).sort((a,b)=>topBasis(b)-topBasis(a)),[prodMap,topMetric])
+  // Least Selling: non-service products currently in stock that have been
+  // in the system at least LEAST_SELLING_MIN_AGE_DAYS days (excluded from
+  // THIS list only — a new/out-of-stock product still shows up everywhere
+  // else). Includes 0-sold eligible products so a never-sold item still
+  // ranks. Ties (commonly several products tied at 0 sold) break by stock
+  // value (stock × cost price) descending, surfacing the biggest tied-up
+  // inventory first.
+  const leastProdsAll = useMemo(()=>{
+    const ageCutoff = subDays(now,LEAST_SELLING_MIN_AGE_DAYS)
+    const eligible = products.filter(p=>!p.isService && p.stock>0 && p.createdAt && new Date(p.createdAt)<=ageCutoff)
+    return eligible
+      .map(p=>({ name:p.name, sold: prodMap[p.name]?.sold||0, revenue: prodMap[p.name]?.revenue||0, stockValue:(p.stock||0)*(p.costPrice||0) }))
+      .sort((a,b)=>topBasis(a)-topBasis(b) || b.stockValue-a.stockValue)
+  },[prodMap,products,topMetric]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Scale both cards' bars off the single best seller, so Least Selling's
+  // bars read as genuinely small relative to Top Selling, on every page.
+  const topMax = topProdsAll[0] ? Math.max(topBasis(topProdsAll[0]),1) : 1
+
+  const topPg   = usePagination(topProdsAll)
+  const leastPg = usePagination(leastProdsAll)
+  useEffect(()=>{ topPg.setPage(1) },[topCount,topMetric,period,customFrom,customTo]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{ leastPg.setPage(1) },[leastCount,topMetric,period,customFrom,customTo]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const topVisible   = topCount==='All'   ? topPg.pageItems   : topProdsAll.slice(0,topCount)
+  const leastVisible = leastCount==='All' ? leastPg.pageItems : leastProdsAll.slice(0,leastCount)
+  const topRankOffset   = topCount==='All'   ? (topPg.page-1)*8   : 0
+  const leastRankOffset = leastCount==='All' ? (leastPg.page-1)*8 : 0
+
+  // Export rows mirror whatever's currently selected on screen — the full
+  // list when "All" is picked, otherwise exactly the visible count.
+  const topExportRows   = useMemo(()=>(topCount==='All'?topProdsAll:topProdsAll.slice(0,topCount)).map((p,i)=>({rank:i+1,...p})),[topProdsAll,topCount])
+  const leastExportRows = useMemo(()=>(leastCount==='All'?leastProdsAll:leastProdsAll.slice(0,leastCount)).map((p,i)=>({rank:i+1,...p})),[leastProdsAll,leastCount])
 
   // Export-only aggregates (not used by any on-screen chart/list).
   const payMethodStats = useMemo(()=>{
@@ -408,6 +446,18 @@ export default function Reports(){
       {header:'Cost',value:r=>r.cost,money:true,total:true},
       {header:'Profit',value:r=>r.profit,money:true,total:true},
     ], rows: itemsSoldRows })
+    addSheet(wb, { ...opts, name: 'Top Selling', columns: [
+      {header:'Rank',value:r=>r.rank},
+      {header:'Product',value:r=>r.name},
+      {header:'Qty Sold',value:r=>r.sold,total:true},
+      {header:'Revenue',value:r=>r.revenue,money:true,total:true},
+    ], rows: topExportRows })
+    addSheet(wb, { ...opts, name: 'Least Selling', columns: [
+      {header:'Rank',value:r=>r.rank},
+      {header:'Product',value:r=>r.name},
+      {header:'Qty Sold',value:r=>r.sold,total:true},
+      {header:'Revenue',value:r=>r.revenue,money:true,total:true},
+    ], rows: leastExportRows })
     addSheet(wb, { ...opts, name: 'Returns & Refunds', columns: [
       {header:'Type',value:r=>r.type},
       {header:'#',value:r=>`#${String(r.id).padStart(4,'0')}`},
@@ -638,27 +688,41 @@ export default function Reports(){
               </ChartCard>
             </div>
             <div className="rpt-col-4">
-              <ChartCard title={<><Trophy size={14} style={{color:'var(--rpt-amber)'}}/>Top 5 Selling</>}
-                actions={<SegmentedControl size="sm" options={[{value:'qty',label:'Qty'},{value:'revenue',label:'Revenue'}]} value={topMetric} onChange={setTopMetric}/>}>
-                <RankedList
-                  items={topProds.map(p=>({key:p.name,label:p.name,value:topBasis(p),_p:p}))}
-                  max={topMax}
-                  renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._p.name)||{})} size={24} radius={6}/>}
-                  renderValue={it=>topMetric==='qty'?`${it._p.sold} sold`:peso(it._p.revenue)}
-                  emptyText="No data."
-                />
+              <ChartCard title={<><Trophy size={14} style={{color:'var(--rpt-amber)'}}/>Top Selling</>}
+                style={{height:420}} bodyStyle={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}
+                actions={<div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <SegmentedControl size="sm" options={[{value:'qty',label:'Qty'},{value:'revenue',label:'Revenue'}]} value={topMetric} onChange={setTopMetric}/>
+                  <SegmentedControl size="sm" options={COUNT_OPTIONS} value={topCount} onChange={setTopCount}/>
+                </div>}>
+                <div className="ranked-list-scroll">
+                  <RankedList
+                    items={topVisible.map(p=>({key:p.name,label:p.name,value:topBasis(p),_p:p}))}
+                    max={topMax}
+                    rankOffset={topRankOffset}
+                    renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._p.name)||{})} size={24} radius={6}/>}
+                    renderValue={it=>topMetric==='qty'?`${it._p.sold} sold`:peso(it._p.revenue)}
+                    emptyText="No data."
+                  />
+                </div>
+                {topCount==='All' && <Pagination {...topPg}/>}
               </ChartCard>
             </div>
             <div className="rpt-col-4">
-              <ChartCard title={<><TrendingDown size={14} style={{color:'var(--rpt-red)'}}/>Least 5 Selling</>}>
-                <RankedList
-                  items={leastProds.map(p=>({key:p.name,label:p.name,value:topBasis(p),_p:p}))}
-                  max={topMax}
-                  barColor="var(--rpt-red)"
-                  renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._p.name)||{})} size={24} radius={6}/>}
-                  renderValue={it=>topMetric==='qty'?`${it._p.sold} sold`:peso(it._p.revenue)}
-                  emptyText="No data."
-                />
+              <ChartCard title={<><TrendingDown size={14} style={{color:'var(--rpt-red)'}}/>Least Selling</>}
+                style={{height:420}} bodyStyle={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}
+                actions={<SegmentedControl size="sm" options={COUNT_OPTIONS} value={leastCount} onChange={setLeastCount}/>}>
+                <div className="ranked-list-scroll">
+                  <RankedList
+                    items={leastVisible.map(p=>({key:p.name,label:p.name,value:topBasis(p),_p:p}))}
+                    max={topMax}
+                    rankOffset={leastRankOffset}
+                    barColor="var(--rpt-red)"
+                    renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._p.name)||{})} size={24} radius={6}/>}
+                    renderValue={it=>topMetric==='qty'?`${it._p.sold} sold`:peso(it._p.revenue)}
+                    emptyText={LEAST_SELLING_EMPTY_TEXT}
+                  />
+                </div>
+                {leastCount==='All' && <Pagination {...leastPg}/>}
               </ChartCard>
             </div>
           </div>
