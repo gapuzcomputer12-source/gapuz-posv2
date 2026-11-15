@@ -10,7 +10,17 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-const EMPTY = { name:'', email:'', phone:'', address:'' }
+const EMPTY = { name:'', email:'', phone:'+63', address:'' }
+
+const GMAIL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._%+-]*@gmail\.com$/
+const PH_PHONE_RE = /^\+63\d{10}$/
+
+const toPHPhone = (raw) => {
+  let digits = String(raw||'').replace(/\D/g,'')
+  if(digits.startsWith('63')) digits = digits.slice(2)
+  else if(digits.startsWith('0')) digits = digits.slice(1)
+  return '+63'+digits.slice(0,10)
+}
 
 const AVATAR_COLORS = [
   { bg: 'var(--accent)', fg: '#0a0a0a' },
@@ -40,13 +50,21 @@ export default function Customers() {
   const t     = useT()
 
   const openAdd  = () => { setForm(EMPTY); setModal('add') }
-  const openEdit = c => { setForm({name:c.name,email:c.email||'',phone:c.phone||'',address:c.address||''}); setSelected(c); setModal('edit') }
+  const openEdit = c => { setForm({name:c.name,email:c.email||'',phone:toPHPhone(c.phone||''),address:c.address||''}); setSelected(c); setModal('edit') }
   const openHistory = c => { setSelected(c); setModal('history') }
+
+  const handlePhoneChange = e => setForm(f=>({...f, phone: toPHPhone(e.target.value)}))
 
   const handleSave = () => {
     if(!form.name.trim()) return toast('Name is required','error')
-    if(modal==='add') { addCustomer(form); toast(t('customer_added'),'success') }
-    else { updateCustomer(selected.id,form); toast(t('customer_updated'),'success') }
+    const email = form.email.trim()
+    if(email && !GMAIL_RE.test(email)) return toast('Email must be a valid Gmail address (e.g. juan@gmail.com)','error')
+    const phone = form.phone.trim()
+    const hasPhoneDigits = phone.replace('+63','').length>0
+    if(hasPhoneDigits && !PH_PHONE_RE.test(phone)) return toast('Phone must be a valid PH number: +63 followed by 10 digits','error')
+    const payload = {...form, email, phone: hasPhoneDigits?phone:''}
+    if(modal==='add') { addCustomer(payload); toast(t('customer_added'),'success') }
+    else { updateCustomer(selected.id,payload); toast(t('customer_updated'),'success') }
     setModal(null)
   }
 
@@ -123,9 +141,11 @@ export default function Customers() {
           <div className="card animate-scale-in" style={{padding:28}}>
             <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}>{modal==='add'?<><Plus size={14} style={{color:'var(--green)'}}/>{t('add_customer')}</>:<><Pencil size={14} style={{color:'var(--blue)'}}/>{t('edit_customer')}</>}</div>
             <div style={{display:'flex',flexDirection:'column',gap:14}}>
-              {[['name',t('full_name'),'Juan dela Cruz','text'],['email',t('email_addr'),'juan@email.com','email'],['phone',t('phone'),'0917-123-4567','text'],['address',t('address'),'Cagayan de Oro City','text']].map(([key,label,ph,type])=>(
+              {[['name',t('full_name'),'Juan dela Cruz','text'],['email',t('email_addr'),'juan@gmail.com','email']].map(([key,label,ph,type])=>(
                 <div key={key}><label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{label}</label><input className="input-field" type={type} value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} placeholder={ph}/></div>
               ))}
+              <div><label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('phone')}</label><input className="input-field" type="tel" inputMode="numeric" value={form.phone} onChange={handlePhoneChange} placeholder="+639171234567" maxLength={13}/></div>
+              <div><label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('address')}</label><input className="input-field" type="text" value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))} placeholder="Cagayan de Oro City"/></div>
             </div>
             <div style={{display:'flex',gap:10,marginTop:20,justifyContent:'flex-end'}}><button onClick={()=>setModal(null)} className="btn-secondary">{t('cancel')}</button><button onClick={handleSave} className="btn-primary">{t('save')}</button></div>
           </div>
