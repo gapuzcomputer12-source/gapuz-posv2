@@ -26,10 +26,9 @@ function friendlyCameraError(err) {
   }
 }
 
-// Live in-page camera (getUserMedia — same mechanism as the barcode
-// scanner, see ScanInput.jsx) for evidence photos, so it works on desktop
-// webcams too, not just phones (unlike <input capture>, which only phones
-// honor). onCapture(blob) is called once per "Use Photo" — the caller
+// Live in-page camera (getUserMedia) for evidence photos, so it works on
+// desktop webcams too, not just phones (unlike <input capture>, which only
+// phones honor). onCapture(blob) is called once per "Use Photo" — the caller
 // (EvidencePhotoPicker) runs that blob through the exact same
 // compressImage -> upload pipeline a file-picker photo goes through; this
 // component only ever produces a raw captured-frame Blob, nothing more.
