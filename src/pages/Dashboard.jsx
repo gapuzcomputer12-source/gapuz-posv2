@@ -4,7 +4,7 @@ import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Respon
 import { startOfDay, endOfDay, subDays } from 'date-fns'
 import { Hand, Clock, ChevronRight, Trophy, Package, Receipt, ClipboardList, Wallet, Calculator, PauseCircle } from 'lucide-react'
 import { useTransactionStore, useProductStore, useAuthStore, useRefundStore, useReturnStore, useHoldStore, useAppStore } from '../store'
-import { useT, peso, pesoCompact, paymentDisplay, fmtDate } from '../utils/helpers'
+import { useT, peso, pesoCompact, paymentDisplay, fmtDate, SLOW_MOVING_DAYS } from '../utils/helpers'
 import { computeSalesMetrics, getDailySeries } from '../utils/salesMetrics'
 import { StatusBadge } from '../components/RefundDetailsModal'
 import StatCard from '../components/StatCard'
@@ -171,6 +171,7 @@ export default function Dashboard() {
   const today = startOfDay(now)
   const yest  = subDays(today, 1)
   const thirtyAgo = startOfDay(subDays(now, 29))
+  const slowMovingCutoff = subDays(now, SLOW_MOVING_DAYS)
 
   const myName = user?.user_metadata?.name || user?.email?.split('@')[0] || ''
   const hour     = now.getHours()
@@ -221,10 +222,12 @@ export default function Dashboard() {
   const topMax = topProds30[0] ? topBasis(topProds30[0]) : 1
 
   const slowMoving = useMemo(() => products
-    .filter(p => !p.isService && p.stock > 0 && (!p.lastSoldAt || new Date(p.lastSoldAt) < thirtyAgo))
+    .filter(p => !p.isService && p.isAvailable !== false && p.stock > 0
+      && (!p.lastSoldAt || new Date(p.lastSoldAt) < slowMovingCutoff)
+      && p.createdAt && new Date(p.createdAt) <= slowMovingCutoff)
     .map(p => ({ ...p, tiedUp: (p.stock || 0) * (p.costPrice || 0) }))
     .sort((a, b) => b.tiedUp - a.tiedUp)
-    .slice(0, 5), [products, thirtyAgo])
+    .slice(0, 5), [products, slowMovingCutoff])
 
   const recentTxns = transactions.slice(0, 5)
   const txBadges = (tx) => ({

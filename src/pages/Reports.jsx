@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { startOfDay, endOfDay, subDays, startOfMonth, endOfMonth, eachDayOfInterval, eachMonthOfInterval, format, differenceInCalendarDays } from 'date-fns'
 import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore } from '../store'
-import { useT, peso, getTier, fmtDate, refundSettledAmount } from '../utils/helpers'
+import { useT, peso, getTier, fmtDate, refundSettledAmount, SLOW_MOVING_DAYS } from '../utils/helpers'
 import { computeSalesMetrics, isMoneyBack } from '../utils/salesMetrics'
 import { addSheet, addMultiTableSheet, downloadWorkbook, createWorkbook } from '../utils/exportXlsx'
 import { ComposedChart, Area, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
@@ -298,7 +298,9 @@ export default function Reports(){
   ],[lowStockRows,outStockRows])
 
   const slowMoving = useMemo(()=>products
-    .filter(p=>!p.isService && p.stock>0 && (!p.lastSoldAt || new Date(p.lastSoldAt) < subDays(now,90)))
+    .filter(p=>!p.isService && p.isAvailable!==false && p.stock>0
+      && (!p.lastSoldAt || new Date(p.lastSoldAt) < subDays(now,SLOW_MOVING_DAYS))
+      && p.createdAt && new Date(p.createdAt) <= subDays(now,SLOW_MOVING_DAYS))
     .map(p=>({...p, tiedUp:(p.stock||0)*(p.costPrice||0)}))
     .sort((a,b)=>b.tiedUp-a.tiedUp),[products]) // eslint-disable-line react-hooks/exhaustive-deps
   const slowMovingPg = usePagination(slowMoving)
@@ -855,7 +857,7 @@ export default function Reports(){
             </div>
           </div>
 
-          <ChartCard title={<><Archive size={14} style={{color:'var(--rpt-muted)'}}/>Slow-Moving Products</>} subtitle="In stock, no sale in 90+ days.">
+          <ChartCard title={<><Archive size={14} style={{color:'var(--rpt-muted)'}}/>Slow-Moving Products</>} subtitle={`In stock, no sale in ${SLOW_MOVING_DAYS}+ days.`}>
             <div className="rpt-simple-list">
               {slowMoving.length===0?<div className="rpt-empty">Nothing slow-moving right now.</div>
               :slowMovingPg.pageItems.map(p=>(

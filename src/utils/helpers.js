@@ -145,6 +145,12 @@ export const RETURN_REASONS = ['Defective product','Wrong item delivered','Custo
 // keep them in sync by hand if this ever changes.
 export const SALE_ADJUSTMENT_DAYS = 7
 
+// Single source of truth for the Slow-Moving Products window used by both
+// Dashboard's and Reports' widgets: no sale in this many days, and the
+// product must have existed for at least this many days (so new stock
+// isn't flagged before it's had a chance to sell).
+export const SLOW_MOVING_DAYS = 30
+
 // Sum of this transaction's refund.total across non-excluded refunds —
 // refunds are money-only now (no item/qty breakdown), so "how much has
 // already been refunded" is just a sum of amounts, not item quantities.

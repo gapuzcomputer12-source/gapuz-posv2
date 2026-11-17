@@ -135,7 +135,7 @@ Same 7-day window and idempotency pattern as Refunds. On **admin approval**, eve
 ### 5.7 Reports (`Reports.jsx`) — Admin only
 Four tabs, each filterable by period (Today / This Week / This Month / This Year / Custom range):
 - **Sales** — gross/net sales, returns & refunds, net profit, transaction count, average sale; a sales-vs-returns trend chart (hourly/daily/monthly depending on period span); payment-method donut; **Top Selling** and **Least Selling** product lists (Qty/Revenue toggle, independent 5/10/20/All count selector per card with pagination when "All" is picked — see note below); full transaction history table.
-- **Inventory** — stock value (cost & retail), low/out-of-stock counts, 30-day top sellers, restock recommendations (status: Reorder now / Reorder soon / OK / No demand, based on 30-day sales velocity), low-stock & out-of-stock lists, slow-moving products (in stock, unsold 90+ days), products selling below cost, low-margin products (≤15%).
+- **Inventory** — stock value (cost & retail), low/out-of-stock counts, 30-day top sellers, restock recommendations (status: Reorder now / Reorder soon / OK / No demand, based on 30-day sales velocity), low-stock & out-of-stock lists, slow-moving products (in stock, added ≥30 days ago, unsold 30+ days), products selling below cost, low-margin products (≤15%).
 - **Returns & Refunds** — pending/approved/rejected counts and amounts, returned-units-by-condition donut, top rejection/return reasons, defective-returns ledger, combined request history.
 - **Customers** — loyalty tier distribution, top spenders for the period, tier criteria reference.
 
@@ -214,7 +214,7 @@ No realtime subscriptions anywhere — data is fetched on load/navigation and on
 - **Returns are the only path for a physical item to come back** — approval requires an explicit Resellable/Defective call per unit; Replacement additionally issues a new serial.
 - **Least Selling eligibility (Reports)**: non-service, in-stock, ≥10 days old.
 - **Low stock**: fires at 1–3 units remaining (both the UI badge and the email alert).
-- **Slow-moving**: in stock, no sale in 90+ days.
+- **Slow-moving**: in stock, not a service, available, added ≥30 days ago, no sale in 30+ days (`SLOW_MOVING_DAYS`).
 - **Low margin**: ≤15% profit margin.
 - **Evidence photos (Returns)**: at least 1 required; current UI cap is 3 (a DB migration comment says "up to 5" — worth reconciling if the limit matters).
 - **Pagination**: 8 rows/page everywhere, client-side.

@@ -46,7 +46,7 @@ Now a merged superset of the old Inventory + Loss tabs.
 | Restock Recommendations table | per-product avg/day, days-left, suggested reorder, status pill, filterable by status | see §3 below — paginated, status filter chips show live counts |
 | Low Stock list | `stock>0 && stock<=3`, Services excluded | paginated simple list |
 | Out of Stock list | `stock===0`, Services excluded | paginated simple list |
-| Slow-Moving Products | in stock, Services excluded, never sold or `lastSoldAt` > 90 days ago | sorted by `tiedUp = stock×costPrice` descending |
+| Slow-Moving Products | in stock, Services + unavailable products excluded, added ≥30 days ago, never sold or `lastSoldAt` > 30 days ago (`SLOW_MOVING_DAYS`) | sorted by `tiedUp = stock×costPrice` descending |
 | Products Selling Below Cost | `price < costPrice`, Services excluded | **Sold** = units sold **in the selected period** (`periodSoldMap`, not all-time); **Total loss** = `(costPrice−price)×soldInPeriod` |
 | Low Margin Products | `costPrice` set, Services excluded, margin 0–15% | `margin = round((price−costPrice)/price×100)`, all-time (not period-dependent) |
 
@@ -86,7 +86,7 @@ No Gross/Net/Refund figures on this tab.
 - **Status**: `No demand` (sold30===0) → `Reorder now` (daysLeft≤7, or stock===0 with any demand) → `Reorder soon` (daysLeft≤14) → else `OK`.
 - Sorted by status rank, then ascending `daysLeft` within a status.
 - Services excluded from all of the above (`demandRows` filters `!p.isService`).
-- **Slow-Moving** is a separate, simpler 90-day-no-sale cutoff (`!lastSoldAt || lastSoldAt < now-90d`), not tied to the 30-day demand window — a product can be "OK" by demand status (if it sold recently) while never appearing in Slow-Moving, or vice versa if it has old stock with no recent sales at all.
+- **Slow-Moving** is a separate, simpler 30-day-no-sale cutoff (`!lastSoldAt || lastSoldAt < now-30d`, plus `createdAt <= now-30d` so newly added stock isn't flagged) — coincidentally the same 30 days as the demand window above, but it's an independent check, not tied to `demandRows`. A product can be "OK" by demand status (if it sold recently) while never appearing in Slow-Moving, or vice versa if it has old stock with no recent sales at all.
 
 ---
 
@@ -132,4 +132,4 @@ Not present in this file — no print button or PDF export path in `Reports.jsx`
 1. **Restock/below-cost "sold" figures use two different windows on the same tab.** Restock Recommendations uses a fixed trailing-30-day window regardless of the period selector; Below Cost's "Sold" column uses whatever period is currently selected. Low Margin uses neither (all-time). All three sit on the Inventory tab at once.
 2. **Pending/Rejected counts vs Approved amounts use different date fields** on the Returns & Refunds tab (`createdAt` for counts, `processedAt` for approved amounts) — a request submitted in one period and approved in the next can shift which period's "Approved" total it lands in without affecting that period's "Pending" count.
 3. **Top Customers (period) vs the stat cards above it (all-time)** on the Customers tab read different windows by design — easy to misread them as directly comparable at a glance.
-4. **Slow-Moving (90-day) and the Restock demand window (30-day)** are independent cutoffs that can disagree on the same product.
+4. **Slow-Moving (30-day) and the Restock demand window (30-day)** happen to share the same length now but are independent cutoffs that can disagree on the same product.
