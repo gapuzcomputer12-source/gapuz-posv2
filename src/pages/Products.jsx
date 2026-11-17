@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Package, Plus, Pencil, AlertTriangle, TrendingUp, Tags, X, Check, Sparkles, Barcode, Search, Wrench } from 'lucide-react'
+import { Package, Plus, Pencil, AlertTriangle, TrendingUp, Tags, X, Check, Sparkles, Barcode, Search, Wrench, Camera } from 'lucide-react'
 import { useProductStore, useAppStore, useCategoryStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, peso, stockStatus, genBarcode, categoryIcon, resizeImage, ICON_MAP, ICON_OPTIONS, BADGE_SWATCHES } from '../utils/helpers'
@@ -8,6 +8,7 @@ import ProductThumb from '../components/ProductThumb'
 import SerialsModal from '../components/SerialsModal'
 import FindSerialModal from '../components/FindSerialModal'
 import Modal from '../components/Modal'
+import CameraCaptureModal from '../components/CameraCaptureModal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
@@ -58,6 +59,7 @@ export default function Products() {
   const [editIcon,   setEditIcon]   = useState('')
   const [serialsFor, setSerialsFor] = useState(null)
   const [findSerialOpen, setFindSerialOpen] = useState(false)
+  const [cameraOpen, setCameraOpen] = useState(false)
   const { theme } = useAppStore()
   const toast = useToast()
   const t     = useT()
@@ -75,12 +77,22 @@ export default function Products() {
 
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0]
+    e.target.value = ''
     if (!file) return
     try {
       const dataUrl = await resizeImage(file)
       setForm(f => ({ ...f, image: dataUrl }))
     } catch {
       toast('Could not read that image','error')
+    }
+  }
+
+  const handleCameraCapture = async (blob) => {
+    try {
+      const dataUrl = await resizeImage(blob)
+      setForm(f => ({ ...f, image: dataUrl }))
+    } catch {
+      toast('Could not read that photo','error')
     }
   }
 
@@ -289,19 +301,27 @@ export default function Products() {
               <div><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('category')}</label><select className="select-field" style={{width:'100%'}} value={form.category} onChange={e=>{ const val=e.target.value; setForm(f=>({...f,category:val,isService:val==='Services'?true:f.isService})) }}>{categories.map(c=><option key={c.id}>{c.name}</option>)}</select></div>
               <div>
                 <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('product_image')}</label>
-                <label style={{
-                  display:'flex', alignItems:'center', gap:10, padding:'6px 12px', borderRadius:10, 
-                  background:'var(--bg3)', border:'1px solid var(--border2)', cursor:'pointer', transition:'all .15s'
-                }} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--accent)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border2)'}>
-                  <ProductThumb image={form.image} category={form.category} size={28} radius={6}/>
-                  <div style={{flex:1, fontSize:11, fontWeight:700, color:form.image?'var(--text)':'var(--text3)'}}>
-                    {form.image ? 'Change Image' : 'Upload Image'}
-                  </div>
-                  {form.image && (
-                    <div onClick={e=>{e.preventDefault(); setForm(f=>({...f,image:''}))}} style={{fontSize:16, color:'var(--red)', padding:'0 4px', fontWeight:700}}>×</div>
-                  )}
-                  <input type="file" accept="image/*" hidden onChange={handleFileChange}/>
-                </label>
+                <div style={{display:'flex', alignItems:'center', gap:8}}>
+                  <label style={{
+                    display:'flex', alignItems:'center', gap:10, padding:'6px 12px', borderRadius:10, flex:1, minWidth:0,
+                    background:'var(--bg3)', border:'1px solid var(--border2)', cursor:'pointer', transition:'all .15s'
+                  }} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--accent)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border2)'}>
+                    <ProductThumb image={form.image} category={form.category} size={28} radius={6}/>
+                    <div style={{flex:1, fontSize:11, fontWeight:700, color:form.image?'var(--text)':'var(--text3)', minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                      {form.image ? 'Change Image' : 'Upload Image'}
+                    </div>
+                    {form.image && (
+                      <div onClick={e=>{e.preventDefault(); setForm(f=>({...f,image:''}))}} style={{fontSize:16, color:'var(--red)', padding:'0 4px', fontWeight:700, flexShrink:0}}>×</div>
+                    )}
+                    <input type="file" accept="image/*" hidden onChange={handleFileChange}/>
+                  </label>
+                  <button type="button" title="Take Photo" onClick={()=>setCameraOpen(true)} style={{
+                    display:'flex', alignItems:'center', justifyContent:'center', width:38, height:38, flexShrink:0, borderRadius:10,
+                    background:'var(--bg3)', border:'1px solid var(--border2)', cursor:'pointer', transition:'all .15s'
+                  }} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--accent)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border2)'}>
+                    <Camera size={16} style={{color:mutedText}}/>
+                  </button>
+                </div>
               </div>
               {[['price',t('price'),'0.00'],...(form.isService?[]:[['costPrice',t('cost_price'),'0.00']])].map(([key,label,ph])=>(
                 <div key={key}><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{label} *</label><input className="input-field" type="number" min="0" value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} placeholder={ph}/></div>
@@ -440,6 +460,7 @@ export default function Products() {
       )}
       {serialsFor&&<SerialsModal product={serialsFor} onClose={()=>setSerialsFor(null)}/>}
       {findSerialOpen&&<FindSerialModal onClose={()=>setFindSerialOpen(false)}/>}
+      <CameraCaptureModal open={cameraOpen} onClose={()=>setCameraOpen(false)} onCapture={handleCameraCapture} maxCaptures={1}/>
       {lossConfirm&&(
         <Modal open onClose={()=>setLossConfirm(null)} contentStyle={{width:'min(360px,92vw)'}}>
           <div className="card animate-scale-in" style={{padding:28,textAlign:'center'}}>
