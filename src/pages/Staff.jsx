@@ -94,6 +94,7 @@ export default function Staff() {
   const handleSave = async () => {
     if (!form.name.trim())  return toast('Name is required', 'error')
     if (!form.email.trim()) return toast('Email is required', 'error')
+    if (!/^[^\s@]+@gmail\.com$/i.test(form.email.trim())) return toast('Email must be a valid @gmail.com address', 'error')
     if (isAdd && !form.password) return toast('Password is required', 'error')
     if (form.password) {
       const pwErr = passwordError(form.password)
