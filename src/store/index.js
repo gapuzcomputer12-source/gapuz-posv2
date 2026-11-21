@@ -359,6 +359,24 @@ export async function lookupSerial(serialNumber) {
   return data
 }
 
+// Paginated, searchable list of a single product's In Stock serials — used
+// by the POS page's inline "Serial Numbers" panel so it never has to load
+// every serial for a product at once. search (if any) is applied server-side
+// via ilike; count:'exact' drives the "Page X of Y" label.
+export async function fetchAvailableSerials(productId, { page = 1, pageSize = 5, search = '' } = {}) {
+  let query = supabase
+    .from('product_serials')
+    .select('id:serial_id, productId:product_id, serialNumber:serial_number, status', { count: 'exact' })
+    .eq('product_id', productId)
+    .eq('status', 'In Stock')
+  const term = search.trim()
+  if (term) query = query.ilike('serial_number', `%${term}%`)
+  const from = (page - 1) * pageSize
+  const { data, error, count } = await query.order('serial_number').range(from, from + pageSize - 1)
+  if (error) return { data: [], count: 0 }
+  return { data, count: count || 0 }
+}
+
 // ── PRODUCT SERIALS STORE (admin: receive stock, find a serial) ──
 const SERIAL_SELECT = 'id:serial_id, productId:product_id, serialNumber:serial_number, status, transactionId:transaction_id, soldAt:sold_at, createdAt:created_at'
 

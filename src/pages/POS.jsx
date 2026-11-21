@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Package, PauseCircle, Barcode, Wrench } from 'lucide-react'
-import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppStore, useCategoryStore, lookupSerial } from '../store'
+import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppStore, useCategoryStore, lookupSerial, fetchAvailableSerials } from '../store'
 import { useToast, ToastViewport } from '../utils/toast'
 import { useT, useKeyboardShortcuts, useBreakpoint, peso, stockStatus, categoryIcon, BADGE_SWATCHES } from '../utils/helpers'
 import Cart from '../components/Cart'
@@ -87,8 +87,18 @@ export default function POS() {
   const [category,  setCategory]  = useState('All')
   const [sortBy,    setSortBy]    = useState('')
   const [showHolds, setShowHolds] = useState(false)
-  const [serialPrompt, setSerialPrompt] = useState(null) // product awaiting a serial scan
-  const [promptScanned, setPromptScanned] = useState([])
+
+  // "Serial Numbers" modal for the product last clicked in the grid, if
+  // it's serial-tracked. Rows come from the server already paginated/
+  // filtered — see fetchAvailableSerials.
+  const [serialPanelProduct, setSerialPanelProduct] = useState(null)
+  const [serialPanelPage,    setSerialPanelPage]    = useState(1)
+  const [serialPanelSearch,  setSerialPanelSearch]  = useState('')
+  const [serialPanelRows,    setSerialPanelRows]    = useState([])
+  const [serialPanelCount,   setSerialPanelCount]   = useState(0)
+  const [serialPanelLoading, setSerialPanelLoading] = useState(false)
+  const SERIAL_PAGE_SIZE = 5
+
   const searchRef = useRef()
   const [searchParams] = useSearchParams()
 
@@ -129,11 +139,10 @@ export default function POS() {
     }
   }, [])
 
-  // Validates a scanned serial against this product specifically (used both
-  // by the grid "scan serial" prompt and, implicitly, the search box below).
+  // Validates a serial against this product specifically (used by the
+  // Serial Numbers modal's row click and the search box's scanner).
   // Returns a richer result (tone/product/serial/price) than a plain
-  // {ok,message} now — ScanResultPill (search box) uses the extra fields;
-  // handlePromptScan below only ever looked at `ok`, so it's unaffected.
+  // {ok,message} — ScanResultPill (search box) uses the extra fields.
   const addBySerial = useCallback(async (code, product, prefetchedRow) => {
     const row = prefetchedRow || await lookupSerial(code)
     if (!row) return { ok:false, tone:'error', message:`Serial not found: ${code}` }
@@ -156,11 +165,46 @@ export default function POS() {
   },[items,products,addSerialItem])
 
   const handleAdd = useCallback(product => {
-    if (product.hasSerial) { setPromptScanned([]); setSerialPrompt(product); return }
+    if (product.hasSerial) {
+      setSerialPanelProduct(product)
+      setSerialPanelSearch('')
+      setSerialPanelPage(1)
+      return
+    }
     const ok = addItem(product)
     if(ok) toast(product.name+' added','success',1500)
     else   toast(t('out_of_stock'),'error')
   },[addItem,toast,t])
+
+  // Fetches the current page/search of the open serial panel's product.
+  // Debounced only while the user is actively typing a search term — page
+  // and product switches fetch immediately.
+  useEffect(() => {
+    if (!serialPanelProduct) { setSerialPanelRows([]); setSerialPanelCount(0); return }
+    let cancelled = false
+    setSerialPanelLoading(true)
+    const delay = serialPanelSearch ? 250 : 0
+    const timer = setTimeout(() => {
+      fetchAvailableSerials(serialPanelProduct.id, { page: serialPanelPage, pageSize: SERIAL_PAGE_SIZE, search: serialPanelSearch })
+        .then(({ data, count }) => { if (!cancelled) { setSerialPanelRows(data); setSerialPanelCount(count) } })
+        .finally(() => { if (!cancelled) setSerialPanelLoading(false) })
+    }, delay)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [serialPanelProduct, serialPanelPage, serialPanelSearch])
+
+  const handleSerialPanelSearch = useCallback((v) => {
+    setSerialPanelSearch(v)
+    setSerialPanelPage(1)
+  }, [])
+
+  // Clicking a serial row in the panel adds that exact unit — same path
+  // (addBySerial) the search-box scanner uses, so cart state, duplicate
+  // checks, and toasts stay identical between the two entry points.
+  const handlePanelSerialClick = useCallback(async (row) => {
+    const result = await addBySerial(row.serialNumber, serialPanelProduct, row)
+    if (result.ok) toast(`${result.product?.name ?? serialPanelProduct?.name} added (SN ${row.serialNumber})`,'success',1500)
+    else toast(result.message,'error')
+  },[addBySerial,serialPanelProduct,toast])
 
   // Search-box scan handler: a matching In Stock serial wins first, then a
   // plain barcode match, otherwise nothing was found. Feedback for this
@@ -170,26 +214,13 @@ export default function POS() {
     if (row) return addBySerial(code, products.find(p=>p.id===row.productId), row)
     const bc = products.find(p => (p.barcode||'').toLowerCase() === code.toLowerCase())
     if (bc) {
-      if (bc.hasSerial) { setPromptScanned([]); setSerialPrompt(bc); return { ok:false, tone:'error', message:'Scan a serial for this product' } }
+      if (bc.hasSerial) { setSerialPanelProduct(bc); setSerialPanelSearch(''); setSerialPanelPage(1); return { ok:false, tone:'error', message:'Scan a serial for this product' } }
       const ok = addItem(bc)
       if (ok) return { ok:true, tone:'success', message:'Added', product:bc, price:bc.price }
       return { ok:false, tone:'error', message:t('out_of_stock') }
     }
     return { ok:false, tone:'error', message:'No product or serial found' }
   },[products,addBySerial,addItem,t])
-
-  // Serial-prompt modal ("Scan Serial" for a serialized product added from
-  // the grid) — untouched by the search box's new pill; keeps its own
-  // toast exactly as before (addBySerial no longer toasts itself, so this
-  // is now the only place that does for this path).
-  const handlePromptScan = useCallback(async (code) => {
-    const result = await addBySerial(code, serialPrompt)
-    if (result.ok) {
-      setPromptScanned(list => [...list, code])
-      toast(`${result.product?.name ?? serialPrompt?.name} added (SN ${code})`,'success',1500)
-    }
-    return result
-  },[addBySerial,serialPrompt,toast])
 
   const handleHold = () => {
     if(!items.length) return
@@ -209,6 +240,16 @@ export default function POS() {
     .filter(p=>!(p.isService&&p.isAvailable===false)
       &&(category==='All'||p.category===category)&&(!search||p.name.toLowerCase().includes(search.toLowerCase())||(p.barcode||'').toLowerCase().includes(search.toLowerCase())))
     .sort((a,b)=>{ if(sortBy==='price-asc') return a.price-b.price; if(sortBy==='price-desc') return b.price-a.price; if(sortBy==='name') return a.name.localeCompare(b.name); if(sortBy==='stock') return b.stock-a.stock; return 0 })
+
+  // Serial Numbers modal's "X available" — product.stock (DB-level in-stock
+  // count) minus however many of this product's units are already sitting
+  // in the cart, so the number ticks down live as units are added without
+  // needing a refetch (checkout/deduct_stock hasn't run yet, so the DB
+  // count itself doesn't change until then).
+  const serialModalProduct = serialPanelProduct && (products.find(p=>p.id===serialPanelProduct.id) || serialPanelProduct)
+  const serialModalCartCount = serialModalProduct ? (items.find(i=>i.id===serialModalProduct.id)?.serials?.length || 0) : 0
+  const serialModalAvailable = serialModalProduct ? Math.max(0, serialModalProduct.stock - serialModalCartCount) : 0
+  const serialModalTotalPages = Math.max(1, Math.ceil(serialPanelCount/SERIAL_PAGE_SIZE))
 
   useKeyboardShortcuts([
     {key:'/',fn:()=>searchRef.current?.focus()},
@@ -334,29 +375,70 @@ export default function POS() {
         </Modal>
       )}
 
-      {/* Scan-serial prompt — shown when a serialized product is added from the grid */}
-      {serialPrompt&&(
-        <Modal open onClose={()=>setSerialPrompt(null)} contentStyle={{width:'min(420px,92vw)'}}>
-          <div className="card animate-scale-in" style={{padding:24}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
+      {/* Serial Numbers modal — opened when a serial-tracked product is
+          clicked in the grid (or a scanned barcode matches one without a
+          specific unit). Stays open across multiple adds so the cashier can
+          pick several units of the same product before dismissing it. */}
+      {serialPanelProduct&&(
+        <Modal open onClose={()=>setSerialPanelProduct(null)} contentStyle={{width:'min(440px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:24,maxHeight:'82vh',display:'flex',flexDirection:'column'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16,flexShrink:0}}>
               <div>
-                <div style={{fontWeight:700,fontSize:15,display:'flex',alignItems:'center',gap:6}}><Barcode size={15} style={{color:'var(--accent)'}}/>Scan Serial</div>
-                <div style={{fontSize:12,color:mutedText,marginTop:2}}>{serialPrompt.name}</div>
+                <div style={{fontWeight:700,fontSize:15,display:'flex',alignItems:'center',gap:6}}><Barcode size={15} style={{color:'var(--accent)'}}/>Serial Numbers</div>
+                <div style={{fontSize:12,color:mutedText,marginTop:2}}>{serialModalProduct.name} · {serialModalAvailable} available</div>
               </div>
-              <button onClick={()=>setSerialPrompt(null)} style={{background:'none',border:'none',color:mutedText,cursor:'pointer',fontSize:20}}>×</button>
+              <button onClick={()=>setSerialPanelProduct(null)} aria-label="Close" style={{background:'none',border:'none',color:mutedText,cursor:'pointer',fontSize:20}}>×</button>
             </div>
-            <ScanInput placeholder="Scan or type the unit's serial number…" onScan={handlePromptScan} clearOnScan/>
-            {promptScanned.length>0&&(
-              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:12}}>
-                {promptScanned.map(sn=>(
-                  <span key={sn} style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",fontWeight:600,padding:'4px 10px',borderRadius:99,background:'rgba(52,211,153,0.1)',border:'1px solid rgba(52,211,153,0.25)',color:'var(--accent)'}}>{sn}</span>
-                ))}
+
+            <input autoFocus className="input-field" style={{width:'100%',marginBottom:12,flexShrink:0}}
+              placeholder="Filter by serial number…"
+              value={serialPanelSearch} onChange={e=>handleSerialPanelSearch(e.target.value)}/>
+
+            <div style={{flex:1,overflowY:'auto',minHeight:0}}>
+              {serialPanelLoading ? (
+                <div style={{textAlign:'center',padding:16,color:mutedText,fontSize:12}}>Loading…</div>
+              ) : serialPanelCount===0 ? (
+                <div style={{textAlign:'center',padding:16,color:mutedText,fontSize:12}}>
+                  {serialPanelSearch ? 'No serials match your search' : 'No serial numbers in stock'}
+                </div>
+              ) : (
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  {serialPanelRows.map(row=>{
+                    const inCart = items.find(i=>i.id===serialModalProduct.id)?.serials?.includes(row.serialNumber)
+                    return (
+                      <button key={row.id} disabled={inCart} onClick={()=>handlePanelSerialClick(row)} style={{
+                        display:'flex',justifyContent:'space-between',alignItems:'center',width:'100%',
+                        padding:'8px 12px',borderRadius:8,border:'1px solid var(--border2)',
+                        background:inCart?'var(--bg3)':'var(--bg)',cursor:inCart?'not-allowed':'pointer',
+                        fontFamily:"'JetBrains Mono',monospace",fontSize:12,fontWeight:600,
+                        color:inCart?mutedText:'var(--text)',opacity:inCart?0.6:1,textAlign:'left',
+                      }}>
+                        <span>{row.serialNumber}</span>
+                        {inCart && <span style={{fontSize:10,fontWeight:700,color:'var(--accent)',fontFamily:'inherit'}}>In cart</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {serialPanelCount>0&&(
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,marginTop:12,flexShrink:0}}>
+                <button onClick={()=>setSerialPanelPage(p=>p-1)} disabled={serialPanelPage<=1} className="btn-secondary"
+                  style={{padding:'5px 10px',fontSize:11,opacity:serialPanelPage<=1?0.5:1,cursor:serialPanelPage<=1?'not-allowed':'pointer'}}>Back</button>
+                <span style={{fontSize:11.5,color:mutedText,fontWeight:600,whiteSpace:'nowrap'}}>Page {serialPanelPage} of {serialModalTotalPages}</span>
+                <button onClick={()=>setSerialPanelPage(p=>p+1)} disabled={serialPanelPage>=serialModalTotalPages} className="btn-secondary"
+                  style={{padding:'5px 10px',fontSize:11,opacity:serialPanelPage>=serialModalTotalPages?0.5:1,cursor:serialPanelPage>=serialModalTotalPages?'not-allowed':'pointer'}}>Next</button>
               </div>
             )}
-            <button onClick={()=>setSerialPrompt(null)} className="btn-primary" style={{width:'100%',marginTop:16,padding:11}}>Done{promptScanned.length>0?` — ${promptScanned.length} added`:''}</button>
+
+            <div style={{display:'flex',justifyContent:'flex-end',marginTop:16,flexShrink:0}}>
+              <button onClick={()=>setSerialPanelProduct(null)} className="btn-primary" style={{padding:'10px 22px'}}>Done</button>
+            </div>
           </div>
         </Modal>
       )}
+
     </div>
   )
 }
