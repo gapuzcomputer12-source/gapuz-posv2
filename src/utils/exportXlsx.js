@@ -96,6 +96,7 @@ function writeTable(ws, { startRow, columns, rows, title, applyViews = true }) {
       }
       if (isPercent) cell.numFmt = PERCENT_FMT
       if (isDate && v instanceof Date) cell.numFmt = DATE_FMT
+      if (!isMoney && !isPercent && !isDate && col.numFmt && typeof v === 'number') cell.numFmt = col.numFmt
     })
   })
   const dataEnd = dataStart + rows.length - 1

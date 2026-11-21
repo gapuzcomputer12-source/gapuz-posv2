@@ -476,7 +476,7 @@ export default function Reports(){
       {header:'Category',value:r=>r.category},
       {header:'Stock',value:r=>r.stock,total:true},
       {header:'Sold (30d)',value:r=>r.sold30,total:true},
-      {header:'Avg/day',value:r=>Number(r.avgDaily.toFixed(1))},
+      {header:'Avg/day',value:r=>Number(r.avgDaily.toFixed(2)),numFmt:'0.00'},
       {header:'Days Left',value:r=>r.daysLeft===Infinity?'∞':Math.round(r.daysLeft)},
       {header:'Suggested Reorder',value:r=>r.suggestedReorder,total:true},
       {header:'Status',value:r=>r.status},
@@ -790,7 +790,7 @@ export default function Reports(){
                   <table className="rpt-table rpt-table-fixed8">
                     <thead><tr>
                       <th>Product</th><th>Category</th><th className="num">Stock</th><th className="num">Sold (30d)</th>
-                      <th className="num">Avg/day</th><th className="num">Days left</th><th className="num">Suggested reorder</th><th>Status</th>
+                      <th className="num" title="Units sold in the last 30 days ÷ 30">Avg/day</th><th className="num" title="Current stock ÷ average daily sales">Days left</th><th className="num">Suggested reorder</th><th>Status</th>
                     </tr></thead>
                     <tbody>
                       {demandFiltered.length===0?<tr style={{height:416}}><td colSpan={8} style={{textAlign:'center',verticalAlign:'middle',color:'var(--rpt-muted)'}}>No products in this status</td></tr>
@@ -800,8 +800,8 @@ export default function Reports(){
                           <td style={{color:'var(--rpt-muted)'}}>{p.category}</td>
                           <td className="num">{p.stock}</td>
                           <td className="num">{p.sold30}</td>
-                          <td className="num">{p.avgDaily.toFixed(1)}</td>
-                          <td className="num">{p.daysLeft===Infinity?'∞':Math.round(p.daysLeft)}</td>
+                          <td className="num">{p.avgDaily.toFixed(2)}</td>
+                          <td className="num">{p.daysLeft===Infinity?'∞':Math.floor(p.daysLeft)}</td>
                           <td className="num" style={{fontWeight:p.suggestedReorder>0?700:400,color:p.suggestedReorder>0?'var(--rpt-amber)':'var(--rpt-muted)'}}>{p.suggestedReorder}</td>
                           <td><span className={`rpt-pill ${STATUS_PILL[p.status]}`}><span className="dot"/>{p.status}</span></td>
                         </tr>
