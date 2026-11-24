@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { startOfDay, endOfDay, subDays, startOfMonth, endOfMonth, eachDayOfInterval, eachMonthOfInterval, format, differenceInCalendarDays } from 'date-fns'
 import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore, useCategoryStore } from '../store'
-import { useT, peso, getTier, fmtDate, refundSettledAmount, SLOW_MOVING_DAYS, getEffectiveLowStockLevel } from '../utils/helpers'
+import { useT, peso, getTier, fmtDate, refundSettledAmount, getEffectiveLowStockLevel } from '../utils/helpers'
 import { computeSalesMetrics, isMoneyBack } from '../utils/salesMetrics'
 import { addSheet, addMultiTableSheet, downloadWorkbook, createWorkbook } from '../utils/exportXlsx'
 import { ComposedChart, Area, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
@@ -48,11 +48,18 @@ const COUNT_OPTIONS = [5, 10, 20, 'All'].map(v => ({ value: v, label: String(v) 
 // Least Selling: a product needs this many days in the system before it's
 // eligible to be ranked, so a brand-new item isn't unfairly flagged as a
 // worst seller just for not having sold anything yet.
-const LEAST_SELLING_MIN_AGE_DAYS = 10
-const LEAST_SELLING_EMPTY_TEXT = `Products need at least ${LEAST_SELLING_MIN_AGE_DAYS} days in the system to be ranked.`
+const LEAST_SELLING_MIN_AGE_DAYS = 3
+const LEAST_SELLING_EMPTY_TEXT = `No products to rank yet. Products need at least ${LEAST_SELLING_MIN_AGE_DAYS} days in the system.`
 
 const STATUS_RANK = { 'Reorder now': 0, 'Reorder soon': 1, 'OK': 2, 'No demand': 3 }
 const STATUS_PILL = { 'Reorder now': 'rpt-pill-red', 'Reorder soon': 'rpt-pill-amber', 'OK': 'rpt-pill-green', 'No demand': 'rpt-pill-gray' }
+
+// Slow-Moving Products: a product qualifies without waiting the full 30
+// days a brand-new store wouldn't have accumulated yet. Condition A (sells
+// slowly) needs this many days of remaining stock at its current pace;
+// Condition B (no sales yet) needs only this many days since it was added.
+const SLOW_MOVING_DAYS_LEFT_MIN = 60
+const SLOW_MOVING_NO_SALE_MIN_AGE_DAYS = 7
 
 // Completed / Returned / Refunded / Partially Returned — for the Sales >
 // Transactions export sheet only (not shown on-screen). Checks ALL-time
@@ -197,20 +204,32 @@ export default function Reports(){
   // Least Selling: non-service products currently in stock that have been
   // in the system at least LEAST_SELLING_MIN_AGE_DAYS days (excluded from
   // THIS list only — a new/out-of-stock product still shows up everywhere
-  // else). Includes 0-sold eligible products so a never-sold item still
-  // ranks. Ties (commonly several products tied at 0 sold) break by stock
-  // value (stock × cost price) descending, surfacing the biggest tied-up
-  // inventory first.
+  // else). Ranked by Daily Sales Rate — units sold in the period divided by
+  // the days the product actually existed within that period — so a
+  // product added mid-period isn't penalized for days it couldn't have
+  // sold on. Includes 0-sold eligible products so a never-sold item still
+  // ranks first. Ties (commonly several products tied at 0 sold) break by
+  // stock value (stock × cost price) descending, surfacing the biggest
+  // tied-up inventory first.
   const leastProdsAll = useMemo(()=>{
     const ageCutoff = subDays(now,LEAST_SELLING_MIN_AGE_DAYS)
     const eligible = products.filter(p=>!p.isService && p.stock>0 && p.createdAt && new Date(p.createdAt)<=ageCutoff)
     return eligible
-      .map(p=>({ name:p.name, sold: prodMap[p.name]?.sold||0, revenue: prodMap[p.name]?.revenue||0, stockValue:(p.stock||0)*(p.costPrice||0) }))
-      .sort((a,b)=>topBasis(a)-topBasis(b) || b.stockValue-a.stockValue)
-  },[prodMap,products,topMetric]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Scale both cards' bars off the single best seller, so Least Selling's
-  // bars read as genuinely small relative to Top Selling, on every page.
+      .map(p=>{
+        const createdAt = new Date(p.createdAt)
+        const rangeStart = createdAt>periodStart ? createdAt : periodStart
+        const rangeEnd = now<periodEnd ? now : periodEnd
+        const daysAvailable = Math.max(1, differenceInCalendarDays(rangeEnd, rangeStart))
+        const sold = prodMap[p.name]?.sold||0
+        return { name:p.name, sold, revenue: prodMap[p.name]?.revenue||0, daysAvailable, rate: sold/daysAvailable, stockValue:(p.stock||0)*(p.costPrice||0) }
+      })
+      .sort((a,b)=>a.rate-b.rate || b.stockValue-a.stockValue)
+  },[prodMap,products,periodStart,periodEnd,now]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Top Selling's bar scale follows whichever metric (Qty/Revenue) is
+  // toggled. Least Selling always shows units, so it scales off the best
+  // seller's unit count instead, independent of that toggle.
   const topMax = topProdsAll[0] ? Math.max(topBasis(topProdsAll[0]),1) : 1
+  const topSoldMax = Math.max(...topProdsAll.map(p=>p.sold),1)
 
   const topPg   = usePagination(topProdsAll)
   const leastPg = usePagination(leastProdsAll)
@@ -298,12 +317,27 @@ export default function Reports(){
     ...outStockRows.map(p=>({...p, stockStatus:'Out of Stock'})),
   ],[lowStockRows,outStockRows])
 
-  const slowMoving = useMemo(()=>products
-    .filter(p=>!p.isService && p.isAvailable!==false && p.stock>0
-      && (!p.lastSoldAt || new Date(p.lastSoldAt) < subDays(now,SLOW_MOVING_DAYS))
-      && p.createdAt && new Date(p.createdAt) <= subDays(now,SLOW_MOVING_DAYS))
-    .map(p=>({...p, tiedUp:(p.stock||0)*(p.costPrice||0)}))
-    .sort((a,b)=>b.tiedUp-a.tiedUp),[products]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Reuses demandRows' own avgDaily/daysLeft (the same numbers Restock
+  // Recommendations shows) instead of a second formula — Condition A below
+  // is just "that daysLeft is already large". Condition B (never sold)
+  // needs only a week in the system, not the full 30 days, so a brand-new
+  // store isn't stuck with an empty list while every product is <30 days old.
+  const slowMovingNoSaleCutoff = subDays(now, SLOW_MOVING_NO_SALE_MIN_AGE_DAYS)
+  const slowMoving = useMemo(()=>demandRows
+    .filter(p=>p.stock>0)
+    .map(p=>{
+      const daysSinceAdded = p.createdAt ? Math.floor((now-new Date(p.createdAt))/(1000*60*60*24)) : 0
+      const noSalesEver = (p.sold||0)===0 && p.createdAt && new Date(p.createdAt)<=slowMovingNoSaleCutoff
+      const sellsSlowly = !noSalesEver && p.sold30>0 && p.daysLeft>SLOW_MOVING_DAYS_LEFT_MIN
+      if(!noSalesEver && !sellsSlowly) return null
+      const reason = noSalesEver
+        ? `No sales in ${daysSinceAdded} days since added`
+        : `Stock will last ~${Math.round(p.daysLeft)} days`
+      return { ...p, tiedUp:(p.stock||0)*(p.costPrice||0), noSalesEver, daysSinceAdded, reason }
+    })
+    .filter(Boolean)
+    .sort((a,b)=> a.noSalesEver!==b.noSalesEver ? (a.noSalesEver?-1:1) : a.noSalesEver ? b.daysSinceAdded-a.daysSinceAdded : b.daysLeft-a.daysLeft),
+    [demandRows, slowMovingNoSaleCutoff]) // eslint-disable-line react-hooks/exhaustive-deps
   const slowMovingPg = usePagination(slowMoving)
 
   const periodSoldMap = useMemo(()=>{ const m={}; filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ m[i.id]=(m[i.id]||0)+i.qty })); return m },[filtered])
@@ -460,6 +494,7 @@ export default function Reports(){
       {header:'Product',value:r=>r.name},
       {header:'Qty Sold',value:r=>r.sold,total:true},
       {header:'Revenue',value:r=>r.revenue,money:true,total:true},
+      {header:'Daily Sales Rate',value:r=>Number(r.rate.toFixed(2)),numFmt:'0.00'},
     ], rows: leastExportRows })
     addSheet(wb, { ...opts, name: 'Returns & Refunds', columns: [
       {header:'Type',value:r=>r.type},
@@ -495,6 +530,7 @@ export default function Reports(){
       {header:'Category',value:r=>r.category},
       {header:'Stock',value:r=>r.stock,total:true},
       {header:'Last Sold',value:r=>r.lastSoldAt?new Date(r.lastSoldAt):'Never',date:true},
+      {header:'Reason',value:r=>r.reason},
       {header:'Tied Up',value:r=>r.tiedUp,money:true,total:true},
     ], rows: slowMoving })
     addMultiTableSheet(wb, { ...opts, name: 'Pricing Issues', tables: [
@@ -716,12 +752,12 @@ export default function Reports(){
                 actions={<SegmentedControl size="sm" options={COUNT_OPTIONS} value={leastCount} onChange={setLeastCount}/>}>
                 <div className="ranked-list-scroll">
                   <RankedList
-                    items={leastVisible.map(p=>({key:p.name,label:p.name,value:topBasis(p),_p:p}))}
-                    max={topMax}
+                    items={leastVisible.map(p=>({key:p.name,label:p.name,value:p.sold,_p:p}))}
+                    max={topSoldMax}
                     rankOffset={leastRankOffset}
                     barColor="var(--rpt-red)"
                     renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._p.name)||{})} size={24} radius={6}/>}
-                    renderValue={it=>topMetric==='qty'?`${it._p.sold} sold`:peso(it._p.revenue)}
+                    renderValue={it=>`${it._p.sold} sold · ${it._p.rate.toFixed(2)}/day`}
                     emptyText={LEAST_SELLING_EMPTY_TEXT}
                   />
                 </div>
@@ -858,7 +894,7 @@ export default function Reports(){
             </div>
           </div>
 
-          <ChartCard title={<><Archive size={14} style={{color:'var(--rpt-muted)'}}/>Slow-Moving Products</>} subtitle={`In stock, no sale in ${SLOW_MOVING_DAYS}+ days.`}>
+          <ChartCard title={<><Archive size={14} style={{color:'var(--rpt-muted)'}}/>Slow-Moving Products</>} subtitle={`In stock, selling slowly (${SLOW_MOVING_DAYS_LEFT_MIN}+ days of stock left) or never sold (${SLOW_MOVING_NO_SALE_MIN_AGE_DAYS}+ days since added).`}>
             <div className="rpt-simple-list">
               {slowMoving.length===0?<div className="rpt-empty">Nothing slow-moving right now.</div>
               :slowMovingPg.pageItems.map(p=>(
@@ -867,7 +903,7 @@ export default function Reports(){
                     <ProductThumb image={p.image} icon={p.icon} category={p.category} size={26} radius={6}/>
                     <div style={{minWidth:0}}>
                       <div className="rpt-simple-name">{p.name}</div>
-                      <div className="rpt-simple-sub">{p.stock} in stock · Last sold {p.lastSoldAt?fmtDate(p.lastSoldAt):'Never'}</div>
+                      <div className="rpt-simple-sub">{p.stock} in stock · {p.reason}</div>
                     </div>
                   </div>
                   <div style={{fontSize:13,fontWeight:700,color:'var(--rpt-red)',flexShrink:0}}>{peso(p.tiedUp)} stock value</div>

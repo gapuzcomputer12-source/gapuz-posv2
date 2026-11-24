@@ -148,7 +148,7 @@ export default function Products() {
     if(!added) return toast('Failed to add category','error')
     toast('Category added','success')
     setNewCatName(''); setNewCatIcon(''); setNewCatLevel('')
-    catPg.setPage(Math.max(1, Math.ceil((categories.length+1)/8)))
+    catPg.setPage(Math.max(1, Math.ceil((categories.length+1)/6)))
   }
 
   const handleDeleteCategory = async (cat) => {
@@ -156,7 +156,7 @@ export default function Products() {
     if(inUse>0) return toast(`${inUse} product(s) still use "${cat.name}" — reassign them first`,'error')
     if(!window.confirm(`Delete category "${cat.name}"?`)) return
     const ok = await deleteCategory(cat.id)
-    if(ok) toast('Category deleted','info')
+    if(ok){ toast('Category deleted','info'); if(editingCatId===cat.id) closeEditCat() }
   }
 
   const openEditCat  = (c) => { setEditingCatId(c.id); setEditColor(c.badgeColor); setEditIcon(c.icon||''); setEditLevel(c.lowStockLevel??'') }
@@ -178,7 +178,7 @@ export default function Products() {
   const pg = usePagination(filtered)
   useEffect(()=>{ pg.setPage(1) }, [search, catFilter, stockFilter, sortBy])
 
-  const catPg = usePagination(categories)
+  const catPg = usePagination(categories, 6)
 
   const totalValue = products.reduce((s,p)=>s+(p.isService?0:p.price*p.stock),0)
   const outCount   = products.filter(p=>!p.isService&&p.stock===0).length
@@ -416,74 +416,91 @@ export default function Products() {
           </div>
         </Modal>
       )}
-      {modal==='categories'&&(
-        <Modal open onClose={()=>setModal(null)} contentStyle={{width:'min(420px,92vw)'}}>
-          <div className="card animate-scale-in" style={{padding:28,maxHeight:'85vh',display:'flex',flexDirection:'column'}}>
-            <div style={{fontSize:15,fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:6}}><Tags size={14} style={{color:'var(--accent)'}}/>Manage Categories</div>
-
-            <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:6,marginBottom:8,minHeight:8*38}}>
-              {categories.length===0?<div style={{color:mutedText,fontSize:12,textAlign:'center',padding:20}}>No categories yet.</div>
-              :catPg.pageItems.map(c=>{
-                const count = products.filter(p=>p.category===c.name).length
-                const hex = BADGE_SWATCHES.find(s=>s.cls===c.badgeColor)?.hex || '#34d399'
-                const CatIcon = (c.icon && ICON_MAP[c.icon]) || categoryIcon(c.name)
-                if(editingCatId===c.id) return (
-                  <div key={c.id} style={{padding:10,borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)'}}>
-                    <div style={{fontSize:12,fontWeight:700,marginBottom:8,color:'var(--text)'}}>{c.name}</div>
-                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                      {BADGE_SWATCHES.map(s=>(
-                        <button key={s.cls} type="button" onClick={()=>setEditColor(s.cls)} style={{width:20,height:20,borderRadius:'50%',background:s.hex,border:editColor===s.cls?'2px solid var(--text)':'2px solid transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}>
-                          {editColor===s.cls&&<Check size={10} color="#fff"/>}
-                        </button>
-                      ))}
-                    </div>
-                    <IconPicker value={editIcon} onChange={setEditIcon} mutedText={mutedText}/>
-                    <div style={{marginTop:10}}>
-                      <label style={{fontSize:9.5,color:mutedText,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'.5px'}}>Low-stock level</label>
-                      <input className="input-field" type="number" min="0" step="1" style={{width:'100%'}} value={editLevel} onChange={e=>setEditLevel(e.target.value)} placeholder="Default: 3"/>
-                    </div>
-                    <div style={{display:'flex',gap:8,marginTop:12,justifyContent:'flex-end'}}>
-                      <button onClick={closeEditCat} className="btn-secondary" style={{fontSize:11,padding:'5px 12px'}}>{t('cancel')}</button>
-                      <button onClick={()=>handleSaveCatEdit(c)} className="btn-primary" style={{fontSize:11,padding:'5px 12px'}}>{t('save')}</button>
-                    </div>
-                  </div>
-                )
-                return (
-                  <div key={c.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',borderRadius:8,background:'var(--bg3)'}}>
-                    <div style={{width:24,height:24,borderRadius:6,background:`${hex}1a`,border:`1px solid ${hex}40`,display:'flex',alignItems:'center',justifyContent:'center',color:hex,flexShrink:0}}><CatIcon size={13}/></div>
-                    <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:600,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</div>
-                    <div style={{fontSize:10,color:mutedText,flexShrink:0}}>{count} product{count===1?'':'s'}</div>
-                    <button onClick={()=>openEditCat(c)} style={{background:'none',border:'none',color:mutedText,cursor:'pointer',padding:2,display:'flex',flexShrink:0}}><Pencil size={13}/></button>
-                    <button onClick={()=>handleDeleteCategory(c)} style={{background:'none',border:'none',color:'var(--red)',cursor:'pointer',padding:2,display:'flex',flexShrink:0}}><X size={14}/></button>
-                  </div>
-                )
-              })}
+      {modal==='categories'&&(()=>{
+        const editingCat = categories.find(c=>c.id===editingCatId) || null
+        const catLabelStyle = {fontSize:10,color:mutedText,display:'block',marginBottom:6,textTransform:'uppercase',letterSpacing:'.5px'}
+        return (
+        <Modal open onClose={()=>setModal(null)} contentStyle={{width:'min(768px,95vw)'}}>
+          <div className="card animate-scale-in" style={{padding:0,maxHeight:'90vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+            {/* HEADER — fixed */}
+            <div style={{padding:'18px 24px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+              <div style={{fontSize:15,fontWeight:700,display:'flex',alignItems:'center',gap:6}}><Tags size={14} style={{color:'var(--accent)'}}/>Manage Categories</div>
+              <button onClick={()=>setModal(null)} style={{background:'none',border:'none',color:mutedText,cursor:'pointer',padding:4,display:'flex'}}><X size={18}/></button>
             </div>
-            <Pagination {...catPg}/>
 
-            <div style={{borderTop:'1px solid var(--border)',paddingTop:16}}>
-              <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:6,textTransform:'uppercase',letterSpacing:'.5px'}}>New Category</label>
-              <input className="input-field" value={newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="e.g. Monitors" onKeyDown={e=>e.key==='Enter'&&handleAddCategory()}/>
-              <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
-                {BADGE_SWATCHES.map(s=>(
-                  <button key={s.cls} onClick={()=>setNewCatColor(s.cls)} style={{width:22,height:22,borderRadius:'50%',background:s.hex,border:newCatColor===s.cls?'2px solid var(--text)':'2px solid transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}>
-                    {newCatColor===s.cls&&<Check size={12} color="#fff"/>}
-                  </button>
-                ))}
+            {/* BODY — scrolls only if it has to */}
+            <div style={{padding:'20px 24px',overflowY:'auto',flex:1,minHeight:0}}>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-0">
+                <div className="md:pr-6 md:border-r md:border-[var(--border)]">
+                  <label style={catLabelStyle}>Categories</label>
+                  <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                    {categories.length===0?<div style={{color:mutedText,fontSize:12,textAlign:'center',padding:20}}>No categories yet.</div>
+                    :catPg.pageItems.map(c=>{
+                      const count = products.filter(p=>p.category===c.name).length
+                      const hex = BADGE_SWATCHES.find(s=>s.cls===c.badgeColor)?.hex || '#34d399'
+                      const CatIcon = (c.icon && ICON_MAP[c.icon]) || categoryIcon(c.name)
+                      const isEditing = editingCatId===c.id
+                      return (
+                        <div key={c.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',borderRadius:8,background:'var(--bg3)',border:isEditing?'1px solid var(--accent)':'1px solid transparent'}}>
+                          <div style={{width:24,height:24,borderRadius:6,background:`${hex}1a`,border:`1px solid ${hex}40`,display:'flex',alignItems:'center',justifyContent:'center',color:hex,flexShrink:0}}><CatIcon size={13}/></div>
+                          <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:600,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</div>
+                          <div style={{fontSize:10,color:mutedText,flexShrink:0}}>{count} product{count===1?'':'s'}</div>
+                          <span style={{fontSize:9.5,color:mutedText,background:'var(--bg2)',border:'1px solid var(--border2)',borderRadius:999,padding:'2px 7px',flexShrink:0,whiteSpace:'nowrap'}}>{c.lowStockLevel!=null?`Alert at ${c.lowStockLevel}`:'Default: 3'}</span>
+                          <button onClick={()=>openEditCat(c)} style={{background:'none',border:'none',color:mutedText,cursor:'pointer',padding:2,display:'flex',flexShrink:0}}><Pencil size={13}/></button>
+                          <button onClick={()=>handleDeleteCategory(c)} style={{background:'none',border:'none',color:'var(--red)',cursor:'pointer',padding:2,display:'flex',flexShrink:0}}><X size={14}/></button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div style={{marginTop:10}}><Pagination {...catPg}/></div>
+                </div>
+
+                <div className="md:pl-6">
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+                    <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>{editingCat?'Edit Category':'Add Category'}</div>
+                    {editingCat&&<button type="button" onClick={closeEditCat} style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,fontWeight:600,cursor:'pointer',padding:0}}>Cancel edit</button>}
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:16}}>
+                    <div>
+                      <label style={catLabelStyle}>Category name</label>
+                      <input className="input-field" style={{width:'100%'}} disabled={!!editingCat} value={editingCat?editingCat.name:newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="e.g. Monitors" onKeyDown={e=>e.key==='Enter'&&!editingCat&&handleAddCategory()}/>
+                    </div>
+                    <div>
+                      <label style={catLabelStyle}>Color</label>
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                        {BADGE_SWATCHES.map(s=>{
+                          const active = editingCat ? editColor===s.cls : newCatColor===s.cls
+                          return (
+                            <button key={s.cls} type="button" onClick={()=>editingCat?setEditColor(s.cls):setNewCatColor(s.cls)} style={{width:22,height:22,borderRadius:'50%',background:s.hex,border:active?'2px solid var(--text)':'2px solid transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}>
+                              {active&&<Check size={12} color="#fff"/>}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={catLabelStyle}>Icon</label>
+                      <IconPicker value={editingCat?editIcon:newCatIcon} onChange={editingCat?setEditIcon:setNewCatIcon} mutedText={mutedText}/>
+                    </div>
+                    <div>
+                      <label style={catLabelStyle}>Low-stock level</label>
+                      <input className="input-field" type="number" min="0" step="1" style={{width:'100%'}} value={editingCat?editLevel:newCatLevel} onChange={e=>editingCat?setEditLevel(e.target.value):setNewCatLevel(e.target.value)} placeholder="Default: 3"/>
+                      <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>Products in this category alert when stock reaches this level. Leave blank to use 3.</div>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <IconPicker value={newCatIcon} onChange={setNewCatIcon} mutedText={mutedText}/>
-              <div style={{marginTop:10}}>
-                <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:6,textTransform:'uppercase',letterSpacing:'.5px'}}>Low-stock level</label>
-                <input className="input-field" type="number" min="0" step="1" value={newCatLevel} onChange={e=>setNewCatLevel(e.target.value)} placeholder="Default: 3"/>
-              </div>
-              <div style={{display:'flex',gap:10,marginTop:16,justifyContent:'flex-end'}}>
-                <button onClick={()=>setModal(null)} className="btn-secondary">{t('close')||'Close'}</button>
-                <button onClick={handleAddCategory} className="btn-primary">Add Category</button>
-              </div>
+            </div>
+
+            {/* FOOTER — fixed, always visible */}
+            <div style={{padding:'14px 24px',borderTop:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
+              <button onClick={()=>setModal(null)} className="btn-secondary">{t('close')||'Close'}</button>
+              <button onClick={editingCat?()=>handleSaveCatEdit(editingCat):handleAddCategory} className="btn-primary">{editingCat?'Save Changes':'Add Category'}</button>
             </div>
           </div>
         </Modal>
-      )}
+        )
+      })()}
       {serialsFor&&<SerialsModal product={serialsFor} onClose={()=>setSerialsFor(null)}/>}
       {findSerialOpen&&<FindSerialModal onClose={()=>setFindSerialOpen(false)}/>}
       <CameraCaptureModal open={cameraOpen} onClose={()=>setCameraOpen(false)} onCapture={handleCameraCapture} maxCaptures={1}/>
