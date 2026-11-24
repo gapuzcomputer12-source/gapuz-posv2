@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { startOfDay, endOfDay, subDays } from 'date-fns'
 import { Hand, Clock, ChevronRight, Trophy, Package, Receipt, ClipboardList, Wallet, Calculator, PauseCircle } from 'lucide-react'
-import { useTransactionStore, useProductStore, useAuthStore, useRefundStore, useReturnStore, useHoldStore, useAppStore } from '../store'
-import { useT, peso, pesoCompact, paymentDisplay, fmtDate, SLOW_MOVING_DAYS } from '../utils/helpers'
+import { useTransactionStore, useProductStore, useAuthStore, useRefundStore, useReturnStore, useHoldStore, useAppStore, useCategoryStore } from '../store'
+import { useT, peso, pesoCompact, paymentDisplay, fmtDate, SLOW_MOVING_DAYS, getEffectiveLowStockLevel } from '../utils/helpers'
 import { computeSalesMetrics, getDailySeries } from '../utils/salesMetrics'
 import { StatusBadge } from '../components/RefundDetailsModal'
 import StatCard from '../components/StatCard'
@@ -140,6 +140,7 @@ export default function Dashboard() {
   const txLoading    = useTransactionStore(s => s.loading)
   const products     = useProductStore(s => s.products)
   const prodLoading  = useProductStore(s => s.loading)
+  const categories   = useCategoryStore(s => s.categories)
   const refunds      = useRefundStore(s => s.refunds)
   const returns      = useReturnStore(s => s.returns)
   const holds        = useHoldStore(s => s.holds)
@@ -181,7 +182,7 @@ export default function Dashboard() {
   const isService = (productId) => !!products.find(p => p.id === productId)?.isService
   const todayTxns = useMemo(() => transactions.filter(tx => { const d = new Date(tx.createdAt); d.setHours(0, 0, 0, 0); return d.getTime() === today.getTime() }), [transactions, today])
   const itemsSoldToday = useMemo(() => todayTxns.reduce((s, tx) => s + (tx.items || []).reduce((a, i) => a + (isService(i.id) ? 0 : i.qty), 0), 0), [todayTxns, products])
-  const lowStock = useMemo(() => products.filter(p => p.stock > 0 && p.stock <= 3 && !p.isService), [products])
+  const lowStock = useMemo(() => products.filter(p => p.stock > 0 && !p.isService && p.stock <= getEffectiveLowStockLevel(p, categories)), [products, categories])
   const outStock = useMemo(() => products.filter(p => p.stock === 0 && !p.isService), [products])
 
   // ── Admin-only ────────────────────────────────────────────

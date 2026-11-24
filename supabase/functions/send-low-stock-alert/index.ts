@@ -49,6 +49,7 @@ function alertHtml(product: any, level: 'out' | 'low') {
       <table style="width:100%;font-size:13px;border-collapse:collapse;background:${bg};border:1px solid ${border};border-radius:10px;overflow:hidden">
         <tr><td style="padding:10px 14px;color:${label};font-weight:600">Product</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:#111">${product.name}</td></tr>
         <tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Stock Left</td><td style="padding:10px 14px;text-align:right;font-weight:800;color:${accent};border-top:1px solid ${border}">${stockLeft}</td></tr>
+        ${product.lowStockLevel != null ? `<tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Alert Level</td><td style="padding:10px 14px;text-align:right;border-top:1px solid ${border}">${product.lowStockLevel}</td></tr>` : ''}
         ${product.category ? `<tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Category</td><td style="padding:10px 14px;text-align:right;border-top:1px solid ${border}">${product.category}</td></tr>` : ''}
         ${product.barcode ? `<tr><td style="padding:10px 14px;color:${label};font-weight:600;border-top:1px solid ${border}">Barcode</td><td style="padding:10px 14px;text-align:right;border-top:1px solid ${border}">${product.barcode}</td></tr>` : ''}
       </table>
@@ -109,7 +110,7 @@ Deno.serve(async (req) => {
     await client.send({
       from: `Gapuz POS <${senderEmail}>`,
       to: recipients,
-      subject: alertLevel === 'out' ? `Out of Stock: ${product.name}` : `Low Stock: ${product.name} (${product.stock ?? '≤3'} left)`,
+      subject: alertLevel === 'out' ? `Out of Stock: ${product.name}` : `Low Stock: ${product.name} (${product.stock ?? '≤' + (product.lowStockLevel ?? 3)} left)`,
       html: alertHtml(product, alertLevel),
     })
     await client.close()

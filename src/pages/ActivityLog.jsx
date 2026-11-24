@@ -16,9 +16,11 @@ const ACTION_BADGE = {
   reactivated: 'badge-green',
   restocked:   'badge-yellow',
   submitted:   'badge-accent',
+  'logged in':  'badge-blue',
+  'logged out': 'badge-gray',
 }
 
-const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund', serial: 'Serial', return: 'Return' }
+const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund', serial: 'Serial', return: 'Return', session: 'Session' }
 
 function Spinner({ size = 14, color = 'currentColor' }) {
   return (

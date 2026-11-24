@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Package, Plus, Pencil, AlertTriangle, TrendingUp, Tags, X, Check, Sparkles, Barcode, Search, Wrench, Camera } from 'lucide-react'
 import { useProductStore, useAppStore, useCategoryStore } from '../store'
 import { useToast } from '../utils/toast'
-import { useT, peso, stockStatus, genBarcode, categoryIcon, resizeImage, ICON_MAP, ICON_OPTIONS, BADGE_SWATCHES } from '../utils/helpers'
+import { useT, peso, stockStatus, genBarcode, categoryIcon, resizeImage, ICON_MAP, ICON_OPTIONS, BADGE_SWATCHES, getEffectiveLowStockLevel, DEFAULT_LOW_STOCK_LEVEL } from '../utils/helpers'
 import ProductThumb from '../components/ProductThumb'
 import SerialsModal from '../components/SerialsModal'
 import FindSerialModal from '../components/FindSerialModal'
@@ -13,7 +13,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'', hasSerial:false, isService:false, isAvailable:true }
+const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'', hasSerial:false, isService:false, isAvailable:true, lowStockLevel:'' }
 
 // Shared by the "new category" form and each category's inline editor —
 // "Auto" (empty value) means fall back to categoryIcon()'s keyword guess.
@@ -54,9 +54,11 @@ export default function Products() {
   const [newCatName, setNewCatName] = useState('')
   const [newCatColor,setNewCatColor]= useState(BADGE_SWATCHES[0].cls)
   const [newCatIcon, setNewCatIcon] = useState('')
+  const [newCatLevel,setNewCatLevel]= useState('')
   const [editingCatId,setEditingCatId]=useState(null)
   const [editColor,  setEditColor]  = useState(BADGE_SWATCHES[0].cls)
   const [editIcon,   setEditIcon]   = useState('')
+  const [editLevel,  setEditLevel]  = useState('')
   const [serialsFor, setSerialsFor] = useState(null)
   const [findSerialOpen, setFindSerialOpen] = useState(false)
   const [cameraOpen, setCameraOpen] = useState(false)
@@ -72,7 +74,7 @@ export default function Products() {
   const catBadge = (name) => categories.find(c=>c.name===name)?.badgeColor || 'badge-accent'
 
   const openAdd   = () => { setForm({...EMPTY,category:categories[0]?.name||'',barcode:genBarcode()}); setModal('add') }
-  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||'',hasSerial:!!p.hasSerial,isService:!!p.isService,isAvailable:p.isAvailable!==false}); setSelected(p); setModal('edit') }
+  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||'',hasSerial:!!p.hasSerial,isService:!!p.isService,isAvailable:p.isAvailable!==false,lowStockLevel:p.lowStockLevel??''}); setSelected(p); setModal('edit') }
   const openRestock = p => { setSelected(p); setRestockQty(''); setModal('restock') }
 
   const handleFileChange = async (e) => {
@@ -105,9 +107,10 @@ export default function Products() {
     // Serialized products never take a manual stock number either — it's
     // derived from how many serials are registered, via the Serials panel.
     if(!form.isService && !form.hasSerial && (!form.stock||parseInt(form.stock)<=0)) return toast('Stock must be greater than 0','error')
+    if(form.lowStockLevel!=='' && (!Number.isInteger(Number(form.lowStockLevel))||Number(form.lowStockLevel)<0)) return toast('Low-stock alert level must be a whole number, 0 or higher','error')
     const priceNum = parseFloat(form.price), costNum = parseFloat(form.costPrice)
     const stockNum = form.isService ? 0 : form.hasSerial ? (modal==='edit' ? selected.stock : 0) : (parseInt(form.stock)||0)
-    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:form.isService?0:(costNum||0), stock:stockNum, barcode:form.barcode||genBarcode(), image:form.image, hasSerial:form.isService?false:form.hasSerial, isService:form.isService, isAvailable:form.isService?!!form.isAvailable:true }
+    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:form.isService?0:(costNum||0), stock:stockNum, barcode:form.barcode||genBarcode(), image:form.image, hasSerial:form.isService?false:form.hasSerial, isService:form.isService, isAvailable:form.isService?!!form.isAvailable:true, lowStockLevel:form.lowStockLevel===''?null:Number(form.lowStockLevel) }
     if(costNum>priceNum){
       const lossPct = (((costNum-priceNum)/priceNum)*100).toFixed(1)
       setLossConfirm({ data, lossPct })
@@ -140,10 +143,11 @@ export default function Products() {
     const name = newCatName.trim()
     if(!name) return toast('Category name is required','error')
     if(categories.some(c=>c.name.toLowerCase()===name.toLowerCase())) return toast('That category already exists','error')
-    const added = await addCategory(name, newCatColor, newCatIcon)
+    if(newCatLevel!=='' && (!Number.isInteger(Number(newCatLevel))||Number(newCatLevel)<0)) return toast('Low-stock level must be a whole number, 0 or higher','error')
+    const added = await addCategory(name, newCatColor, newCatIcon, newCatLevel===''?null:Number(newCatLevel))
     if(!added) return toast('Failed to add category','error')
     toast('Category added','success')
-    setNewCatName(''); setNewCatIcon('')
+    setNewCatName(''); setNewCatIcon(''); setNewCatLevel('')
     catPg.setPage(Math.max(1, Math.ceil((categories.length+1)/8)))
   }
 
@@ -155,10 +159,11 @@ export default function Products() {
     if(ok) toast('Category deleted','info')
   }
 
-  const openEditCat  = (c) => { setEditingCatId(c.id); setEditColor(c.badgeColor); setEditIcon(c.icon||'') }
+  const openEditCat  = (c) => { setEditingCatId(c.id); setEditColor(c.badgeColor); setEditIcon(c.icon||''); setEditLevel(c.lowStockLevel??'') }
   const closeEditCat = () => setEditingCatId(null)
   const handleSaveCatEdit = async (cat) => {
-    const ok = await updateCategory(cat.id, { badgeColor:editColor, icon:editIcon })
+    if(editLevel!=='' && (!Number.isInteger(Number(editLevel))||Number(editLevel)<0)) return toast('Low-stock level must be a whole number, 0 or higher','error')
+    const ok = await updateCategory(cat.id, { badgeColor:editColor, icon:editIcon, lowStockLevel:editLevel===''?null:Number(editLevel) })
     if(!ok) return toast('Failed to update category','error')
     toast('Category updated','success')
     closeEditCat()
@@ -166,7 +171,7 @@ export default function Products() {
 
   const filtered = products
     .filter(p=>(catFilter==='All'||p.category===catFilter)
-      && (stockFilter==='all' || (p.isService ? false : stockFilter==='low' ? (p.stock>0&&p.stock<=3) : p.stock===0))
+      && (stockFilter==='all' || (p.isService ? false : stockFilter==='low' ? (p.stock>0&&p.stock<=getEffectiveLowStockLevel(p,categories)) : p.stock===0))
       && (!search||p.name.toLowerCase().includes(search.toLowerCase())||(p.barcode||'').toLowerCase().includes(search.toLowerCase())))
     .sort((a,b)=>{ if(sortBy==='name') return a.name.localeCompare(b.name); if(sortBy==='price-asc') return a.price-b.price; if(sortBy==='price-desc') return b.price-a.price; if(sortBy==='stock') return b.stock-a.stock; if(sortBy==='sold') return (b.sold||0)-(a.sold||0); return 0 })
 
@@ -177,7 +182,7 @@ export default function Products() {
 
   const totalValue = products.reduce((s,p)=>s+(p.isService?0:p.price*p.stock),0)
   const outCount   = products.filter(p=>!p.isService&&p.stock===0).length
-  const lowCount   = products.filter(p=>!p.isService&&p.stock>0&&p.stock<=3).length
+  const lowCount   = products.filter(p=>!p.isService&&p.stock>0&&p.stock<=getEffectiveLowStockLevel(p,categories)).length
 
   return (
     <div style={{height:'100%',overflow:'hidden',display:'flex',flexDirection:'column',padding:'12px 20px 20px',gap:16}}>
@@ -224,7 +229,8 @@ export default function Products() {
               :filtered.length===0?<tr><td colSpan={9} style={{textAlign:'center',padding:40,color:mutedText}}>{t('no_data')}</td></tr>
               :pg.pageItems.map(p=>{
                 const profit=p.costPrice?((p.price-p.costPrice)/p.price*100).toFixed(1):'—'
-                const ss=p.isService?null:stockStatus(p.stock)
+                const effLevel=p.isService?null:getEffectiveLowStockLevel(p,categories)
+                const ss=p.isService?null:stockStatus(p.stock,effLevel)
                 return(<tr key={p.id}>
                   <td style={{width:56}}>
                     {p.image && (p.image.startsWith('data:') || p.image.startsWith('http')) ? (
@@ -258,10 +264,10 @@ export default function Products() {
                       </div>
                     ) : (
                       <div style={{display:'flex',flexDirection:'row',alignItems:'center',gap:6}}>
-                        <span style={{display:'inline-flex',alignItems:'baseline',gap:5,width:'fit-content',padding:'3px 9px 3px 7px',borderRadius:99,background:ss.bg,border:`1px solid ${ss.border}`}}>
+                        <span title={`Alert at ${effLevel}`} style={{display:'inline-flex',alignItems:'baseline',gap:5,width:'fit-content',padding:'3px 9px 3px 7px',borderRadius:99,background:ss.bg,border:`1px solid ${ss.border}`}}>
                           <span style={{width:6,height:6,borderRadius:'50%',background:ss.color,flexShrink:0,alignSelf:'center'}}/>
                           {p.stock>0&&<span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14,fontWeight:800,color:ss.color,lineHeight:1}}>{p.stock}</span>}
-                          <span style={{fontSize:10,fontWeight:600,color:ss.color,letterSpacing:'.01em'}}>{p.stock===0?'Out of stock':p.stock<=3?'left':'in stock'}{(() => {
+                          <span style={{fontSize:10,fontWeight:600,color:ss.color,letterSpacing:'.01em'}}>{p.stock===0?'Out of stock':p.stock<=effLevel?'left':'in stock'}{(() => {
                             const now = new Date()
                             const added = p.createdAt ? new Date(p.createdAt) : null
                             const lastSold = p.lastSoldAt ? new Date(p.lastSoldAt) : null
@@ -339,6 +345,18 @@ export default function Products() {
                 </div>
               )}
               <div><label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{t('barcode')}</label><div style={{display:'flex',gap:6}}><input className="input-field" style={{minWidth:0,flex:1}} value={form.barcode} onChange={e=>setForm(f=>({...f,barcode:e.target.value}))} placeholder="Scan or enter barcode"/><button type="button" onClick={()=>setForm(f=>({...f,barcode:genBarcode()}))} style={{padding:'9px 10px',borderRadius:8,border:'1px solid var(--border2)',background:'var(--bg3)',color:bodyText,cursor:'pointer',fontSize:11}}>Gen</button></div></div>
+              {!form.isService && (() => {
+                const catLevel = categories.find(c=>c.name===form.category)?.lowStockLevel ?? DEFAULT_LOW_STOCK_LEVEL
+                return (
+                  <div style={{gridColumn:'span 2'}}>
+                    <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>Low-stock alert level</label>
+                    <input className="input-field" type="number" min="0" step="1" value={form.lowStockLevel} onChange={e=>setForm(f=>({...f,lowStockLevel:e.target.value}))} placeholder={`Default: ${catLevel}`}/>
+                    <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>
+                      Leave blank to use the category level (currently {catLevel}).
+                    </div>
+                  </div>
+                )
+              })()}
               <div style={{gridColumn:'span 2'}}>
                 <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 12px',borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)'}}>
                   <input type="checkbox" checked={form.isService} onChange={e=>setForm(f=>({...f,isService:e.target.checked,hasSerial:e.target.checked?false:f.hasSerial}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
@@ -420,6 +438,10 @@ export default function Products() {
                       ))}
                     </div>
                     <IconPicker value={editIcon} onChange={setEditIcon} mutedText={mutedText}/>
+                    <div style={{marginTop:10}}>
+                      <label style={{fontSize:9.5,color:mutedText,display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'.5px'}}>Low-stock level</label>
+                      <input className="input-field" type="number" min="0" step="1" style={{width:'100%'}} value={editLevel} onChange={e=>setEditLevel(e.target.value)} placeholder="Default: 3"/>
+                    </div>
                     <div style={{display:'flex',gap:8,marginTop:12,justifyContent:'flex-end'}}>
                       <button onClick={closeEditCat} className="btn-secondary" style={{fontSize:11,padding:'5px 12px'}}>{t('cancel')}</button>
                       <button onClick={()=>handleSaveCatEdit(c)} className="btn-primary" style={{fontSize:11,padding:'5px 12px'}}>{t('save')}</button>
@@ -450,6 +472,10 @@ export default function Products() {
                 ))}
               </div>
               <IconPicker value={newCatIcon} onChange={setNewCatIcon} mutedText={mutedText}/>
+              <div style={{marginTop:10}}>
+                <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:6,textTransform:'uppercase',letterSpacing:'.5px'}}>Low-stock level</label>
+                <input className="input-field" type="number" min="0" step="1" value={newCatLevel} onChange={e=>setNewCatLevel(e.target.value)} placeholder="Default: 3"/>
+              </div>
               <div style={{display:'flex',gap:10,marginTop:16,justifyContent:'flex-end'}}>
                 <button onClick={()=>setModal(null)} className="btn-secondary">{t('close')||'Close'}</button>
                 <button onClick={handleAddCategory} className="btn-primary">Add Category</button>

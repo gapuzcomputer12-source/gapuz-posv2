@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { supabase } from '../lib/supabaseClient'
+import { getEffectiveLowStockLevel } from '../utils/helpers'
 
 // Password-reset emails must always point at the stable production URL, not
 // window.location.origin — if "Forgot password" is ever clicked from a
@@ -8,6 +9,24 @@ import { supabase } from '../lib/supabaseClient'
 // 404s with DEPLOYMENT_NOT_FOUND once the preview is replaced or cleaned up.
 // localhost is kept as-is so local dev testing still redirects locally.
 const SITE_URL = window.location.hostname === 'localhost' ? window.location.origin : 'https://gapuz-pos.vercel.app'
+
+// Logs a "Logged in"/"Logged out" Session entry — unlike logActivity below,
+// this is AWAITED by its caller rather than fire-and-forget. logout() needs
+// that: it must write this row while the session is still valid, before
+// signOut() runs, since RLS has no auth.uid() to satisfy the insert policy
+// at all once that happens. Still never throws into the caller — a failed
+// write here must not block an actual login/logout, just gets logged.
+async function logSessionEvent(action, user) {
+  const actorName = user?.user_metadata?.name || user?.email || 'Unknown'
+  const { error } = await supabase.from('activity_log').insert({
+    actor_id: user?.id || null,
+    actor_name: actorName,
+    action,
+    entity_type: 'session',
+    entity_label: 'Session',
+  })
+  if (error) console.error('session activity log failed:', error.message)
+}
 
 // ── AUTH STORE (Supabase Auth + profiles table) ───────────────────
 export const useAuthStore = create((set, get) => ({
@@ -37,14 +56,26 @@ export const useAuthStore = create((set, get) => ({
     })
   },
 
+  // Logs "Logged in" only here, after a real signInWithPassword succeeds —
+  // never from init()'s session restore or onAuthStateChange's
+  // TOKEN_REFRESHED/INITIAL_SESSION firing, since neither of those paths
+  // calls login() or this helper, only the shared _loadProfile. That's what
+  // keeps a page refresh or a token refresh from ever writing a duplicate
+  // "Logged in" entry.
   login: async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error || !data.user) return { ok: false, error }
     await get()._loadProfile(data.user)
+    logSessionEvent('logged in', get().user)
     return { ok: true, error: null }
   },
 
+  // Writes the "Logged out" entry BEFORE signOut() — once signed out there's
+  // no auth.uid() left for RLS to match against, so the insert would be
+  // rejected if ordered the other way around.
   logout: async () => {
+    const { user } = get()
+    if (user) await logSessionEvent('logged out', user)
     await supabase.auth.signOut()
     set({ user: null, role: null })
   },
@@ -124,6 +155,17 @@ function getReturnedId(result) {
 function notifyLowStock(product, level = 'out') {
   supabase.functions.invoke('send-low-stock-alert', { body: { product, level } })
     .then(({ error }) => { if (error) console.error('low-stock alert failed:', error.message) })
+}
+
+// Fire-and-forget: emails every active admin via the send-request-alert edge
+// function when a cashier submits a new return/refund request. The function
+// itself re-checks the caller's role server-side and silently skips when
+// it's not 'cashier', so this is safe to call unconditionally here — but
+// callers should still only invoke it when a row was genuinely just created
+// (not on a deduped resubmit) to avoid spamming admins with retries.
+function notifyRequestAlert(type, id) {
+  supabase.functions.invoke('send-request-alert', { body: { type, id } })
+    .then(({ error }) => { if (error) console.error('request alert failed:', error.message) })
 }
 
 export const useActivityLogStore = create((set) => ({
@@ -232,7 +274,7 @@ export const useAppStore = create(
 )
 
 // ── PRODUCT STORE ────────────────────────────────────────────────
-const PRODUCT_SELECT = 'id:product_id, name, category, price, costPrice:cost_price, stock, barcode, icon, image, sold, hasSerial:has_serial, isService:is_service, isAvailable:is_available, createdAt:created_at, lastSoldAt:last_sold_at'
+const PRODUCT_SELECT = 'id:product_id, name, category, price, costPrice:cost_price, stock, barcode, icon, image, sold, hasSerial:has_serial, isService:is_service, isAvailable:is_available, lowStockLevel:low_stock_level, createdAt:created_at, lastSoldAt:last_sold_at'
 
 export const useProductStore = create((set, get) => ({
   products: [],
@@ -246,7 +288,7 @@ export const useProductStore = create((set, get) => ({
   },
 
   addProduct: async (data) => {
-    const row = { name: data.name, category: data.category, price: data.price, cost_price: data.costPrice, stock: data.stock, barcode: data.barcode, icon: data.icon, image: data.image, has_serial: !!data.hasSerial, is_service: !!data.isService, is_available: data.isAvailable !== false }
+    const row = { name: data.name, category: data.category, price: data.price, cost_price: data.costPrice, stock: data.stock, barcode: data.barcode, icon: data.icon, image: data.image, has_serial: !!data.hasSerial, is_service: !!data.isService, is_available: data.isAvailable !== false, low_stock_level: data.lowStockLevel ?? null }
     const { data: inserted, error } = await supabase.from('products').insert(row).select(PRODUCT_SELECT).single()
     if (error || !inserted) return null
     set(s => ({ products: [...s.products, inserted] }))
@@ -267,15 +309,18 @@ export const useProductStore = create((set, get) => ({
     if ('hasSerial' in data) row.has_serial = !!data.hasSerial
     if ('isService' in data) row.is_service = !!data.isService
     if ('isAvailable' in data) row.is_available = !!data.isAvailable
+    if ('lowStockLevel' in data) row.low_stock_level = data.lowStockLevel ?? null
     const prev = get().products.find(p => p.id === id)
     const { error } = await supabase.from('products').update(row).eq('product_id', id)
     if (!error) {
       set(s => ({ products: s.products.map(p => p.id === id ? { ...p, ...data } : p) }))
       logActivity('updated', 'product', data.name || prev?.name)
       if ('stock' in data && prev?.stock > data.stock && !data.isService && !prev?.isService) {
-        const alertProduct = { name: data.name || prev?.name, category: data.category || prev?.category, barcode: data.barcode || prev?.barcode, stock: data.stock }
+        const merged = { ...prev, ...data }
+        const level = getEffectiveLowStockLevel(merged, useCategoryStore.getState().categories)
+        const alertProduct = { name: data.name || prev?.name, category: data.category || prev?.category, barcode: data.barcode || prev?.barcode, stock: data.stock, lowStockLevel: level }
         if (data.stock === 0) notifyLowStock(alertProduct, 'out')
-        else if (data.stock <= 3) notifyLowStock(alertProduct, 'low')
+        else if (data.stock <= level) notifyLowStock(alertProduct, 'low')
       }
     }
   },
@@ -305,8 +350,8 @@ export const useProductStore = create((set, get) => ({
       products: s.products.map(p => {
         const r = byId.get(p.id)
         if (!r) return p
-        if (r.out_zeroed) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode, stock: r.out_stock }, 'out'])
-        else if (r.out_low) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode, stock: r.out_stock }, 'low'])
+        if (r.out_zeroed) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode, stock: r.out_stock, lowStockLevel: r.out_level }, 'out'])
+        else if (r.out_low) alerts.push([{ name: p.name, category: p.category, barcode: p.barcode, stock: r.out_stock, lowStockLevel: r.out_level }, 'low'])
         const ci = items.find(i => i.id === p.id)
         return { ...p, stock: r.out_stock, sold: (p.sold || 0) + (ci?.qty || 0) }
       })
@@ -424,7 +469,7 @@ export const useSerialStore = create((set, get) => ({
 }))
 
 // ── CATEGORY STORE ───────────────────────────────────────────────
-const CATEGORY_SELECT = 'id:category_id, name, badgeColor:badge_color, icon, sortOrder:sort_order'
+const CATEGORY_SELECT = 'id:category_id, name, badgeColor:badge_color, icon, sortOrder:sort_order, lowStockLevel:low_stock_level'
 
 export const useCategoryStore = create((set, get) => ({
   categories: [],
@@ -437,9 +482,9 @@ export const useCategoryStore = create((set, get) => ({
     else set({ loading: false })
   },
 
-  addCategory: async (name, badgeColor, icon) => {
+  addCategory: async (name, badgeColor, icon, lowStockLevel) => {
     const sortOrder = get().categories.reduce((max, c) => Math.max(max, c.sortOrder), 0) + 1
-    const row = { name: name.trim(), badge_color: badgeColor, icon: icon || null, sort_order: sortOrder }
+    const row = { name: name.trim(), badge_color: badgeColor, icon: icon || null, sort_order: sortOrder, low_stock_level: lowStockLevel ?? null }
     const { data: inserted, error } = await supabase.from('categories').insert(row).select(CATEGORY_SELECT).single()
     if (error || !inserted) return null
     set(s => ({ categories: [...s.categories, inserted] }))
@@ -452,6 +497,7 @@ export const useCategoryStore = create((set, get) => ({
     const row = {}
     if ('badgeColor' in data) row.badge_color = data.badgeColor
     if ('icon' in data) row.icon = data.icon || null
+    if ('lowStockLevel' in data) row.low_stock_level = data.lowStockLevel ?? null
     const { error } = await supabase.from('categories').update(row).eq('category_id', id)
     if (!error) {
       set(s => ({ categories: s.categories.map(c => c.id === id ? { ...c, ...data } : c) }))
@@ -621,7 +667,10 @@ export const useRefundStore = create((set, get) => ({
     const row = rows?.[0]
     const id = getReturnedId(rows)
     await get().fetchRefunds()
-    if (row?.created) logActivity('submitted', 'refund', `#${String(id).padStart(4, '0')}`, { refund_id: id, total: data.amount })
+    if (row?.created) {
+      logActivity('submitted', 'refund', `#${String(id).padStart(4, '0')}`, { refund_id: id, total: data.amount })
+      notifyRequestAlert('refund', id)
+    }
     return { id, error: null }
   },
 
@@ -798,7 +847,10 @@ export const useReturnStore = create((set, get) => ({
     const row = rows?.[0]
     const id = getReturnedId(rows)
     await get().fetchReturns()
-    if (row?.created) logActivity('created', 'return', `#${String(id).padStart(4, '0')}`, { return_id: id, total: data.total })
+    if (row?.created) {
+      logActivity('created', 'return', `#${String(id).padStart(4, '0')}`, { return_id: id, total: data.total })
+      notifyRequestAlert('return', id)
+    }
     return { id, error: null }
   },
 

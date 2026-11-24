@@ -53,7 +53,7 @@ export default function App() {
             <Route path="refunds"   element={<Refunds/>}/>
             <Route path="returns"   element={<Returns/>}/>
             <Route path="staff"     element={<Guard adminOnly><Staff/></Guard>}/>
-            <Route path="activity-log" element={<Guard adminOnly><ActivityLog/></Guard>}/>
+            <Route path="activity-log" element={<ActivityLog/>}/>
           </Route>
           <Route path="*" element={<Navigate to="/" replace/>}/>
         </Routes>

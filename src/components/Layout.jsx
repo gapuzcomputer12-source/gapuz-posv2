@@ -21,7 +21,7 @@ const NAV = [
     { to:'/products',  key:'products',  icon: <SidebarIcon><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></SidebarIcon>, adminOnly:true },
     { to:'/customers', key:'customers', icon: <SidebarIcon><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></SidebarIcon> },
     { to:'/staff',     key:'staff_accounts', icon: <SidebarIcon><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></SidebarIcon>, adminOnly:true },
-    { to:'/activity-log', key:'activity_log', icon: <SidebarIcon><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></SidebarIcon>, adminOnly:true },
+    { to:'/activity-log', key:'activity_log', icon: <SidebarIcon><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></SidebarIcon> },
   ]},
   { section: 'Finance', items:[
     { to:'/reports',   key:'reports',   icon: <SidebarIcon><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></SidebarIcon>, adminOnly:true },
@@ -98,15 +98,17 @@ export default function Layout() {
     useReturnStore.getState().fetchReturns()
     useHoldStore.getState().fetchHolds()
     useCategoryStore.getState().fetchCategories()
-    // Staff accounts and the activity log are admin-only pages — RLS
-    // already blocks a cashier from reading activity_log, but `profiles`
-    // (staff) has no such restriction, so without this a cashier session
-    // would silently fetch the full staff list despite having no route to
-    // it. Keep the fetch itself admin-only too, not just the UI.
+    // Staff accounts are admin-only — `profiles` has no RLS restriction of
+    // its own, so without this a cashier session would silently fetch the
+    // full staff list despite having no route to it. Keep the fetch itself
+    // admin-only too, not just the UI.
     if (role === 'admin') {
       useStaffStore.getState().fetchStaff()
-      useActivityLogStore.getState().fetchLogs()
     }
+    // Activity log fetch is safe for both roles now — RLS on activity_log
+    // itself scopes what comes back (admins get every row, cashiers get
+    // only their own), so this never needs a role check here.
+    useActivityLogStore.getState().fetchLogs()
   },[role])
 
   // No realtime subscription exists in this app yet, so a cashier sitting on

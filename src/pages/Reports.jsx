@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { startOfDay, endOfDay, subDays, startOfMonth, endOfMonth, eachDayOfInterval, eachMonthOfInterval, format, differenceInCalendarDays } from 'date-fns'
-import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore } from '../store'
-import { useT, peso, getTier, fmtDate, refundSettledAmount, SLOW_MOVING_DAYS } from '../utils/helpers'
+import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore, useCategoryStore } from '../store'
+import { useT, peso, getTier, fmtDate, refundSettledAmount, SLOW_MOVING_DAYS, getEffectiveLowStockLevel } from '../utils/helpers'
 import { computeSalesMetrics, isMoneyBack } from '../utils/salesMetrics'
 import { addSheet, addMultiTableSheet, downloadWorkbook, createWorkbook } from '../utils/exportXlsx'
 import { ComposedChart, Area, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
@@ -103,6 +103,7 @@ function buildBuckets(period, periodStart, periodEnd, transactions, refunds, ret
 export default function Reports(){
   const transactions = useTransactionStore(s=>s.transactions)
   const products     = useProductStore(s=>s.products)
+  const categories   = useCategoryStore(s=>s.categories)
   const customers    = useCustomerStore(s=>s.customers)
   const refunds      = useRefundStore(s=>s.refunds)
   const returns      = useReturnStore(s=>s.returns)
@@ -252,7 +253,7 @@ export default function Reports(){
   // ── INVENTORY ────────────────────────────────────────────────
   const stockValueCost   = useMemo(()=>products.filter(p=>!p.isService).reduce((s,p)=>s+(p.costPrice||0)*p.stock,0),[products])
   const stockValueRetail = useMemo(()=>products.filter(p=>!p.isService).reduce((s,p)=>s+p.price*p.stock,0),[products])
-  const lowStock  = useMemo(()=>products.filter(p=>p.stock>0&&p.stock<=3&&!p.isService),[products])
+  const lowStock  = useMemo(()=>products.filter(p=>p.stock>0&&!p.isService&&p.stock<=getEffectiveLowStockLevel(p,categories)),[products,categories])
   const outStock  = useMemo(()=>products.filter(p=>p.stock===0&&!p.isService),[products])
 
   const last30Start = startOfDay(subDays(now,29))

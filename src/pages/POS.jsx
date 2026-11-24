@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Package, PauseCircle, Barcode, Wrench } from 'lucide-react'
 import { useCartStore, useHoldStore, useProductStore, useCustomerStore, useAppStore, useCategoryStore, lookupSerial, fetchAvailableSerials } from '../store'
 import { useToast, ToastViewport } from '../utils/toast'
-import { useT, useKeyboardShortcuts, useBreakpoint, peso, stockStatus, categoryIcon, BADGE_SWATCHES } from '../utils/helpers'
+import { useT, useKeyboardShortcuts, useBreakpoint, peso, stockStatus, categoryIcon, BADGE_SWATCHES, getEffectiveLowStockLevel } from '../utils/helpers'
 import Cart from '../components/Cart'
 import ScanInput from '../components/ScanInput'
 import ScanResultPill from '../components/ScanResultPill'
@@ -13,12 +13,16 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-function ProductCard({ product, onAdd, isLight, bodyText, catColor }) {
+function ProductCard({ product, onAdd, isLight, bodyText, catColor, categories }) {
   const { stock, name, image, icon, price, category, isService } = product
   // Services track no stock — never gray out, never "out of stock", always
   // clickable; a soft badge replaces the stock pill below instead.
   const isOut = !isService && stock === 0
-  const isLow = !isService && stock > 0 && stock <= 3
+  // Same shared rule as Products.jsx and the low-stock email — product's
+  // own low_stock_level, else its category's, else the default of 3. Never
+  // a hardcoded threshold here.
+  const effLevel = isService ? null : getEffectiveLowStockLevel(product, categories)
+  const isLow = !isService && stock > 0 && stock <= effLevel
   const mutedText = isLight ? '#4b5563' : 'var(--text3)'
 
   return (
@@ -311,7 +315,7 @@ export default function POS() {
           : filtered.length===0
             ? <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',color:mutedText,gap:8}}><Package size={36} style={{opacity:.2}}/><span>{t('no_data')}</span></div>
             : <div style={{display:'grid',gap:10,gridTemplateColumns:`repeat(auto-fill,minmax(${isMobile?120:148}px,1fr))`,alignContent:'start'}}>
-                {filtered.map(p=><ProductCard key={p.id} product={p} onAdd={handleAdd} isLight={isLight} bodyText={bodyText} catColor={catHex(p.category)}/>)}
+                {filtered.map(p=><ProductCard key={p.id} product={p} onAdd={handleAdd} isLight={isLight} bodyText={bodyText} catColor={catHex(p.category)} categories={categories}/>)}
               </div>
           }
         </div>

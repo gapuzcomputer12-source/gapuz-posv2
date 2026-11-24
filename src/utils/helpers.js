@@ -69,9 +69,26 @@ export const resizeImage = (file, maxDim = 640, quality = 0.8) => new Promise((r
   reader.readAsDataURL(file)
 })
 
-export const stockStatus = (stock) => {
+// Default threshold when neither a product nor its category has a custom
+// low_stock_level set — the original fixed behavior, kept as the fallback
+// so existing products/categories alert exactly like before.
+export const DEFAULT_LOW_STOCK_LEVEL = 3
+
+// The ONE shared rule for what counts as "low" for a given product: its own
+// override wins, then its category's default, then the system default.
+// Mirrors effective_low_stock_level() in Postgres (see
+// add_dynamic_low_stock_levels.sql) so the DB (checkout alert) and the
+// frontend (badges, dashboard, reports, filters) always agree.
+export function getEffectiveLowStockLevel(product, categories) {
+  if (product?.lowStockLevel != null) return product.lowStockLevel
+  const cat = categories?.find(c => c.name === product?.category)
+  if (cat?.lowStockLevel != null) return cat.lowStockLevel
+  return DEFAULT_LOW_STOCK_LEVEL
+}
+
+export const stockStatus = (stock, level = DEFAULT_LOW_STOCK_LEVEL) => {
   if(stock===0)  return {label:'Out of stock',cls:'badge-red',   color:'var(--red)',   bg:'rgba(239,68,68,0.1)', border:'rgba(239,68,68,0.22)'}
-  if(stock<=3)   return {label:`${stock} left`,cls:'badge-yellow',color:'var(--yellow)',bg:'rgba(245,158,11,0.1)', border:'rgba(245,158,11,0.22)'}
+  if(stock<=level) return {label:`${stock} left`,cls:'badge-yellow',color:'var(--yellow)',bg:'rgba(245,158,11,0.1)', border:'rgba(245,158,11,0.22)'}
   return               {label:`${stock} in stock`,cls:'badge-green', color:'var(--green)', bg:'rgba(34,197,94,0.1)',border:'rgba(34,197,94,0.2)'}
 }
 
