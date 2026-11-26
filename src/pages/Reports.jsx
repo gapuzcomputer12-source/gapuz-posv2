@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { startOfDay, endOfDay, subDays, startOfMonth, endOfMonth, eachDayOfInterval, eachMonthOfInterval, format, differenceInCalendarDays } from 'date-fns'
 import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore, useCategoryStore, useRewardStore } from '../store'
 import { useT, peso, getTier, fmtDate, refundSettledAmount, getEffectiveLowStockLevel } from '../utils/helpers'
-import { computeSalesMetrics, isMoneyBack } from '../utils/salesMetrics'
+import { computeSalesMetrics, isMoneyBack, lineProfit, computeSlowMoving } from '../utils/salesMetrics'
 import { addSheet, addMultiTableSheet, downloadWorkbook, createWorkbook } from '../utils/exportXlsx'
 import { ComposedChart, Area, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import {
@@ -18,7 +18,9 @@ import ChartCard from '../components/ChartCard'
 import RankedList from '../components/RankedList'
 import DonutCard from '../components/DonutCard'
 import SegmentedControl from '../components/SegmentedControl'
-import { StatusBadge } from '../components/RefundDetailsModal'
+import RefundDetailsModal, { StatusBadge } from '../components/RefundDetailsModal'
+import ReturnDetailsModal from '../components/ReturnDetailsModal'
+import TransactionDetailsModal from '../components/TransactionDetailsModal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
@@ -34,6 +36,34 @@ const REPORT_TABS = [
   { id: 'returns',   label: 'Returns & Refunds', icon: <RotateCcw size={14} /> },
   { id: 'customer',  label: 'Customers',         icon: <Users size={14} /> },
 ]
+
+// The 6 Sales-tab KPI cards, each a drill-down into the chart below —
+// clicking one selects which field(s) of buildSalesBuckets' per-bucket
+// output the chart/tooltip read, and which title it shows. `valueOf`
+// mirrors exactly how each StatCard already renders its own number, so
+// the selected card's big number always still matches what's on the card.
+const SALES_CARDS = [
+  { key: 'gross',        label: 'Gross Sales',        icon: TrendingUp, tone: 'default', valueOf: (m) => peso(m.grossSales) },
+  { key: 'returns',      label: 'Returns & Refunds',  icon: Undo2,      tone: 'red',     valueOf: (m) => peso(-(m.refundTotal + m.returnTotal)) },
+  { key: 'net',          label: 'Net Sales',          icon: Wallet,     tone: 'default', valueOf: (m) => peso(m.netSales) },
+  { key: 'profit',       label: 'Net Profit',         icon: Coins,      tone: 'default', valueOf: (m) => peso(m.netProfit) },
+  { key: 'transactions', label: 'Transactions',       icon: Receipt,    tone: 'default', valueOf: (m) => m.transactionCount },
+  { key: 'avg',          label: 'Average Sale',       icon: Calculator, tone: 'default', valueOf: (m, avg) => peso(avg) },
+]
+
+// Which bucket field(s) each card's chart plots, and in what color — Bar
+// (Today) or Area+Line (longer periods) below just maps over whichever of
+// these arrays is active. Reds for returns/refunds, greens for everything
+// sales/profit-shaped, per the existing chart's own palette.
+const CHART_SERIES = {
+  gross:        [{ key: 'gross',     name: 'Gross Sales',  color: '#059669' }],
+  returns:      [{ key: 'returnAmt', name: 'Returns',      color: '#DC2626' }, { key: 'refundAmt', name: 'Refunds', color: '#F87171' }],
+  net:          [{ key: 'gross',     name: 'Gross Sales',  color: '#6EE7B7' }, { key: 'net',       name: 'Net Sales', color: '#059669' }],
+  profit:       [{ key: 'profit',    name: 'Net Profit',   color: '#059669' }],
+  transactions: [{ key: 'count',     name: 'Transactions', color: '#059669' }],
+  avg:          [{ key: 'avg',       name: 'Average Sale', color: '#059669' }],
+}
+const CARD_TITLE = Object.fromEntries(SALES_CARDS.map(c => [c.key, c.label]))
 const PERIODS = ['Today', 'This Week', 'This Month', 'This Year', 'Custom']
 
 const TAB_TITLE = {
@@ -77,33 +107,60 @@ function txnStatus(tx, refunds, returns) {
   return 'Completed'
 }
 
-// Builds the "Sales vs Returns & Refunds" chart buckets for whichever
-// granularity fits the selected period — hourly during store hours (Today),
-// daily (Week/Month/short Custom ranges), or monthly (This Year/long Custom
-// ranges). Each bucket re-runs the shared computeSalesMetrics so it always
-// agrees with the period total's own math.
-function buildBuckets(period, periodStart, periodEnd, transactions, refunds, returns) {
+// Builds the per-bucket series behind every KPI card's drill-down chart —
+// hourly for a single day, daily for a 2-31 day span, monthly beyond that.
+// Each bucket re-runs the shared computeSalesMetrics over a sub-window
+// that exactly tiles [periodStart, periodEnd], so summing any one field
+// across every bucket always reproduces that same field on the period's
+// own KPI card — never a second, drifting calculation.
+//
+// Bug fixed here: the hourly view used to hard-code 8:00-20:00, so a sale
+// outside store hours (e.g. a 21:00 test sale) was counted in the KPI
+// total but fell into no bucket at all — the chart read all-zero while
+// the card above it showed a real total. Buckets now start from whichever
+// is earlier of 8:00 or the day's first (non-voided) sale, and end at
+// whichever is later of 20:00 or its last — so the default view is still
+// the normal business-hours window on a normal day, but nothing is ever
+// silently dropped.
+function buildSalesBuckets(period, periodStart, periodEnd, transactions, refunds, returns) {
+  const bucketMetrics = (from, to, label) => {
+    const m = computeSalesMetrics({ transactions, refunds, returns, from, to })
+    return {
+      label, gross: m.grossSales, returnAmt: m.returnTotal, refundAmt: m.refundTotal,
+      net: m.netSales, profit: m.netProfit, count: m.transactionCount,
+      avg: m.transactionCount > 0 ? m.grossSales / m.transactionCount : 0,
+    }
+  }
+
   if (period === 'Today') {
-    return Array.from({length:13},(_,i)=>{
-      const h=i+8
-      const from=new Date(periodStart); from.setHours(h,0,0,0)
-      const to=new Date(periodStart); to.setHours(h,59,59,999)
-      const m=computeSalesMetrics({transactions,refunds,returns,from,to})
-      return {label:`${h}:00`, gross:m.grossSales, returns:m.refundTotal+m.returnTotal, net:m.netSales}
+    let minHour = 8, maxHour = 20
+    transactions.forEach(tx => {
+      if (tx.status === 'Voided') return
+      const d = new Date(tx.createdAt)
+      if (d < periodStart || d > periodEnd) return
+      const h = d.getHours()
+      if (h < minHour) minHour = h
+      if (h > maxHour) maxHour = h
+    })
+    const hours = []
+    for (let h = minHour; h <= maxHour; h++) hours.push(h)
+    return hours.map(h => {
+      const from = new Date(periodStart); from.setHours(h, 0, 0, 0)
+      const to = new Date(periodStart); to.setHours(h, 59, 59, 999)
+      return bucketMetrics(from, to, `${h}:00`)
     })
   }
+
   const spanDays = differenceInCalendarDays(periodEnd, periodStart)
-  if (period === 'This Year' || spanDays > 60) {
-    return eachMonthOfInterval({start:periodStart,end:periodEnd}).map(d=>{
-      const from=startOfMonth(d), to=endOfMonth(d)
-      const m=computeSalesMetrics({transactions,refunds,returns,from,to})
-      return {label:format(d,'MMM'), gross:m.grossSales, returns:m.refundTotal+m.returnTotal, net:m.netSales}
+  if (spanDays > 31) {
+    return eachMonthOfInterval({ start: periodStart, end: periodEnd }).map(d => {
+      const from = startOfMonth(d), to = endOfMonth(d)
+      return bucketMetrics(from, to, format(d, 'MMM'))
     })
   }
-  return eachDayOfInterval({start:periodStart,end:periodEnd}).map(d=>{
-    const from=startOfDay(d), to=endOfDay(d)
-    const m=computeSalesMetrics({transactions,refunds,returns,from,to})
-    return {label:format(d,'MMM d'), gross:m.grossSales, returns:m.refundTotal+m.returnTotal, net:m.netSales}
+  return eachDayOfInterval({ start: periodStart, end: periodEnd }).map(d => {
+    const from = startOfDay(d), to = endOfDay(d)
+    return bucketMetrics(from, to, format(d, 'MMM d'))
   })
 }
 
@@ -115,10 +172,18 @@ export default function Reports(){
   const refunds      = useRefundStore(s=>s.refunds)
   const returns      = useReturnStore(s=>s.returns)
   const redemptions  = useRewardStore(s=>s.redemptions)
-  const { user }     = useAuthStore()
+  const { user, role } = useAuthStore()
   const t            = useT()
   const [searchParams] = useSearchParams()
   const [activeTab,  setActiveTab]  = useState(() => searchParams.get('tab') || 'sales')
+  const [viewTxnId,  setViewTxnId]  = useState(null)
+  const [viewRequest, setViewRequest] = useState(null) // { kind:'return'|'refund', record } — Returns & Refunds card drill-down
+  // Deliberately NOT reset by any period/tab effect below — "remember the
+  // selected card while the date filter changes" means this survives
+  // period/customFrom/customTo changes on its own just by being a plain
+  // top-level state with nothing resetting it.
+  const [selectedCard, setSelectedCard] = useState('gross')
+  const txnHistoryRef = useRef(null)
   useDocumentTitle(TAB_TITLE[activeTab] || 'Sales Report')
   const [period,     setPeriod]     = useState('Today')
   const [customFrom, setCustomFrom] = useState(() => format(subDays(new Date(),6),'yyyy-MM-dd'))
@@ -181,8 +246,17 @@ export default function Reports(){
   const inPeriod = d => d >= periodStart && d <= periodEnd
 
   const filtered = useMemo(()=>transactions.filter(tx=>inPeriod(new Date(tx.createdAt))),[transactions,periodStart,periodEnd])
-  const txPg = usePagination(filtered)
-  useEffect(()=>{ txPg.setPage(1) }, [period,customFrom,customTo])
+  // `filtered` still shows voided rows (Transaction History must display
+  // them, with a badge) — everything that SUMS/COUNTS sales reads the
+  // activeFiltered copy below instead. txStatusFilter only narrows what
+  // the TABLE shows, never the summary numbers above it.
+  const [txStatusFilter, setTxStatusFilter] = useState('All')
+  const txFiltered = useMemo(()=>filtered.filter(tx=>
+    txStatusFilter==='All' ? true : txStatusFilter==='Voided' ? tx.status==='Voided' : tx.status!=='Voided'
+  ),[filtered,txStatusFilter])
+  const txPg = usePagination(txFiltered)
+  useEffect(()=>{ txPg.setPage(1) }, [period,customFrom,customTo,txStatusFilter])
+  const activeFiltered = useMemo(()=>filtered.filter(tx=>tx.status!=='Voided'),[filtered])
 
   const refundsSubmitted = useMemo(()=>refunds.filter(r=>inPeriod(new Date(r.createdAt))),[refunds,periodStart,periodEnd])
   const returnsSubmitted = useMemo(()=>returns.filter(r=>inPeriod(new Date(r.createdAt))),[returns,periodStart,periodEnd])
@@ -192,12 +266,42 @@ export default function Reports(){
   // ── SALES ──────────────────────────────────────────────────
   const metrics   = useMemo(()=>computeSalesMetrics({ transactions, refunds, returns, from: periodStart, to: periodEnd }),[transactions,refunds,returns,periodStart,periodEnd])
   const salesAvg  = metrics.transactionCount?Math.round(metrics.grossSales/metrics.transactionCount):0
-  const payData   = useMemo(()=>{ const map={}; filtered.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})).filter(d=>d.value>0) },[filtered])
-  const salesChart= useMemo(()=>buildBuckets(period, periodStart, periodEnd, transactions, refunds, returns),[period,periodStart,periodEnd,transactions,refunds,returns])
+  const payData   = useMemo(()=>{ const map={}; activeFiltered.forEach(t=>{map[t.payment]=(map[t.payment]||0)+t.total}); return Object.entries(map).map(([name,value])=>({name,value})).filter(d=>d.value>0) },[activeFiltered])
+  const salesChart= useMemo(()=>buildSalesBuckets(period, periodStart, periodEnd, transactions, refunds, returns),[period,periodStart,periodEnd,transactions,refunds,returns])
+  // "No data for this period" instead of a flat empty chart — any of the 6
+  // cards' underlying numbers being nonzero counts as data.
+  const hasChartData = metrics.transactionCount>0 || metrics.refundCount>0 || metrics.returnCount>0
   const prodMap   = useMemo(()=>{ const m={}
-    filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!m[i.name]) m[i.name]={name:i.name,sold:0,revenue:0}; m[i.name].sold+=i.qty; m[i.name].revenue+=i.qty*i.price }))
+    activeFiltered.forEach(tx=>(tx.items||[]).forEach(i=>{ if(!m[i.name]) m[i.name]={name:i.name,sold:0,revenue:0}; m[i.name].sold+=i.qty; m[i.name].revenue+=i.qty*i.price }))
     return m
-  },[filtered])
+  },[activeFiltered])
+
+  // ── KPI card drill-downs ─────────────────────────────────────
+  // Net Profit card's "Top 5 products by profit" — same lineProfit formula
+  // computeSalesMetrics itself uses for grossProfit, just broken out per
+  // product instead of summed across the whole period.
+  const profitByProduct = useMemo(()=>{
+    const m = {}
+    activeFiltered.forEach(tx=>(tx.items||[]).forEach(i=>{
+      if(!m[i.name]) m[i.name]={name:i.name,sold:0,sales:0,profit:0}
+      m[i.name].sold += i.qty; m[i.name].sales += i.qty*i.price; m[i.name].profit += lineProfit(i)
+    }))
+    return Object.values(m).sort((a,b)=>b.profit-a.profit)
+  },[activeFiltered])
+  // Returns & Refunds card's request list — the exact same Approved-only,
+  // period-filtered, money-back-only set the KPI card's own amount is
+  // summed from (computeSalesMetrics excludes Replacement returns from
+  // returnTotal since no cash moves — returnsApproved itself doesn't, as
+  // the Returns tab's own stats below legitimately want every approved
+  // return regardless of method, so the isMoneyBack filter is applied
+  // here only, not at that shared source).
+  const requestsForCard = useMemo(()=>{
+    const list = [
+      ...returnsApproved.filter(r=>isMoneyBack(r.method)).map(r=>({ kind:'return', id:r.id, status:r.status, transactionId:r.transactionId, amount:r.total, date:approvedDate(r) })),
+      ...refundsApproved.map(r=>({ kind:'refund', id:r.id, status:r.status, transactionId:r.transactionId, amount:r.total, date:approvedDate(r) })),
+    ]
+    return list.sort((a,b)=>b.date-a.date)
+  },[returnsApproved,refundsApproved])
   const topBasis = p => topMetric==='qty' ? p.sold : p.revenue
   // Full ranked lists (not yet sliced to the selected count) — the count
   // selector and "All" pagination both read from these.
@@ -279,7 +383,8 @@ export default function Reports(){
   const last30Start = startOfDay(subDays(now,29))
   const demandMap = useMemo(()=>{
     const map={}
-    transactions.forEach(tx=>{ const d=new Date(tx.createdAt); if(d<last30Start||d>now) return
+    transactions.forEach(tx=>{ if(tx.status==='Voided') return
+      const d=new Date(tx.createdAt); if(d<last30Start||d>now) return
       ;(tx.items||[]).forEach(i=>{ map[i.id]=(map[i.id]||0)+i.qty }) })
     return map
   },[transactions]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -318,27 +423,9 @@ export default function Reports(){
     ...outStockRows.map(p=>({...p, stockStatus:'Out of Stock'})),
   ],[lowStockRows,outStockRows])
 
-  // Reuses demandRows' own avgDaily/daysLeft (the same numbers Restock
-  // Recommendations shows) instead of a second formula — Condition A below
-  // is just "that daysLeft is already large". Condition B (never sold)
-  // needs only a week in the system, not the full 30 days, so a brand-new
-  // store isn't stuck with an empty list while every product is <30 days old.
-  const slowMovingNoSaleCutoff = subDays(now, SLOW_MOVING_NO_SALE_MIN_AGE_DAYS)
-  const slowMoving = useMemo(()=>demandRows
-    .filter(p=>p.stock>0)
-    .map(p=>{
-      const daysSinceAdded = p.createdAt ? Math.floor((now-new Date(p.createdAt))/(1000*60*60*24)) : 0
-      const noSalesEver = (p.sold||0)===0 && p.createdAt && new Date(p.createdAt)<=slowMovingNoSaleCutoff
-      const sellsSlowly = !noSalesEver && p.sold30>0 && p.daysLeft>SLOW_MOVING_DAYS_LEFT_MIN
-      if(!noSalesEver && !sellsSlowly) return null
-      const reason = noSalesEver
-        ? `No sales in ${daysSinceAdded} days since added`
-        : `Stock will last ~${Math.round(p.daysLeft)} days`
-      return { ...p, tiedUp:(p.stock||0)*(p.costPrice||0), noSalesEver, daysSinceAdded, reason }
-    })
-    .filter(Boolean)
-    .sort((a,b)=> a.noSalesEver!==b.noSalesEver ? (a.noSalesEver?-1:1) : a.noSalesEver ? b.daysSinceAdded-a.daysSinceAdded : b.daysLeft-a.daysLeft),
-    [demandRows, slowMovingNoSaleCutoff]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Shared with Dashboard.jsx's widget (see computeSlowMoving in
+  // salesMetrics.js) — one formula, not a second copy that can drift.
+  const slowMoving = useMemo(()=>computeSlowMoving({products, transactions, now}),[products,transactions,now])
   const slowMovingPg = usePagination(slowMoving)
 
   const periodSoldMap = useMemo(()=>{ const m={}; filtered.forEach(tx=>(tx.items||[]).forEach(i=>{ m[i.id]=(m[i.id]||0)+i.qty })); return m },[filtered])
@@ -654,15 +741,20 @@ export default function Reports(){
     }
   }
 
+  // Generic across all 6 cards — reads whichever series CHART_SERIES[selectedCard]
+  // says to show, so the tooltip always matches the chart under it exactly.
+  // Transactions shows a plain count (no ₱, no 2-decimal formatting) since
+  // it isn't money.
   const SalesTip = ({active,payload,label}) => {
     if(!active||!payload?.length) return null
     const d = payload[0].payload
+    const series = CHART_SERIES[selectedCard]
     return (
       <div className="chart-tooltip">
         <div className="chart-tooltip-label">{label}</div>
-        <div className="chart-tooltip-row"><span className="chart-tooltip-dot" style={{background:'#059669'}}/><span className="chart-tooltip-name">Sales</span><span className="chart-tooltip-value">{peso(d.gross)}</span></div>
-        <div className="chart-tooltip-row"><span className="chart-tooltip-dot" style={{background:'#DC2626'}}/><span className="chart-tooltip-name">Returns</span><span className="chart-tooltip-value" style={{color:'var(--rpt-red)'}}>−{peso(d.returns)}</span></div>
-        <div className="chart-tooltip-row" style={{borderTop:'1px solid var(--rpt-divider)',marginTop:4,paddingTop:6}}><span className="chart-tooltip-dot" style={{background:'var(--rpt-title)'}}/><span className="chart-tooltip-name" style={{fontWeight:700,color:'var(--rpt-title)'}}>Net</span><span className="chart-tooltip-value">{peso(d.net)}</span></div>
+        {series.map(s=>(
+          <div key={s.key} className="chart-tooltip-row"><span className="chart-tooltip-dot" style={{background:s.color}}/><span className="chart-tooltip-name">{s.name}</span><span className="chart-tooltip-value">{selectedCard==='transactions' ? d[s.key] : peso(d[s.key])}</span></div>
+        ))}
       </div>
     )
   }
@@ -704,20 +796,46 @@ export default function Reports(){
         {/* ══════════ SALES ══════════ */}
         {activeTab==='sales' && <>
           <div className="rpt-kpi-row">
-            <StatCard icon={TrendingUp} label="Gross Sales" value={peso(metrics.grossSales)}/>
-            <StatCard icon={Undo2} label="Returns & Refunds" value={peso(-(metrics.refundTotal+metrics.returnTotal))} tone="red" sub={`${metrics.returnCount} returns · ${metrics.refundCount} refunds`}/>
-            <StatCard icon={Wallet} label="Net Sales" value={peso(metrics.netSales)}/>
-            <StatCard icon={Coins} label="Net Profit" value={peso(metrics.netProfit)} sub={`Gross profit ${peso(metrics.grossProfit)}`}/>
-            <StatCard icon={Receipt} label="Transactions" value={metrics.transactionCount}/>
-            <StatCard icon={Calculator} label="Average Sale" value={peso(salesAvg)} sub="Gross ÷ transactions"/>
+            {SALES_CARDS.map(c=>{
+              const selected = selectedCard===c.key
+              const value = c.key==='avg' ? c.valueOf(metrics, salesAvg) : c.valueOf(metrics)
+              const sub = c.key==='returns' ? `${metrics.returnCount} returns · ${metrics.refundCount} refunds`
+                : c.key==='profit' ? `Gross profit ${peso(metrics.grossProfit)}`
+                : c.key==='avg' ? 'Gross ÷ transactions'
+                : 'Click to view in graph'
+              const ringColor = c.tone==='red' ? 'var(--rpt-red)' : 'var(--rpt-green)'
+              return (
+                <button key={c.key} type="button" onClick={()=>setSelectedCard(c.key)} aria-pressed={selected}
+                  className={`rpt-card stat-card rpt-clickable${selected?' rpt-kpi-selected':''}`}
+                  style={{
+                    textAlign:'left', cursor:'pointer', fontFamily:'inherit', width:'100%',
+                    border: selected ? `1.5px solid ${ringColor}` : undefined,
+                    boxShadow: selected ? `0 0 0 3px ${c.tone==='red'?'var(--rpt-red-light)':'var(--rpt-green-light)'}` : undefined,
+                    background: selected ? (c.tone==='red'?'var(--rpt-red-light)':'var(--rpt-green-light)') : undefined,
+                  }}>
+                  <div className="stat-card-top">
+                    <div className="stat-card-icon" style={{background: c.tone==='red'?'var(--rpt-red-light)':'#F3F4F6', color: c.tone==='red'?'var(--rpt-red)':'#6B7280'}}>
+                      <c.icon size={15}/>
+                    </div>
+                    <div className="stat-card-label">{c.label}</div>
+                  </div>
+                  <div className={`stat-card-value${c.tone!=='default'?` v-${c.tone}`:''}`}>{value}</div>
+                  <div className="stat-card-sub" style={{color: selected ? ringColor : undefined, fontWeight: selected?700:400}}>{sub}</div>
+                </button>
+              )
+            })}
           </div>
 
           <div className="rpt-grid-12">
             <div className="rpt-col-8">
-              <ChartCard title="Sales vs Returns & Refunds" style={{height:'100%'}}>
-                {salesChart.length<2 ? (
+              <ChartCard title={`${CARD_TITLE[selectedCard]} – ${periodLabel}`} style={{height:'100%'}}>
+                {!hasChartData ? (
                   <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:260,gap:8}}>
-                    <div style={{fontSize:32,fontWeight:600,color:'var(--rpt-title)'}}>{peso(metrics.grossSales)}</div>
+                    <div style={{fontSize:14,color:'var(--rpt-muted)'}}>No data for this period</div>
+                  </div>
+                ) : salesChart.length<2 ? (
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:260,gap:8}}>
+                    <div style={{fontSize:32,fontWeight:600,color:'var(--rpt-title)'}}>{SALES_CARDS.find(c=>c.key===selectedCard).key==='avg' ? peso(salesAvg) : SALES_CARDS.find(c=>c.key===selectedCard).valueOf(metrics)}</div>
                     <div style={{fontSize:13,color:'var(--rpt-muted)'}}>Not enough data for a trend yet</div>
                   </div>
                 ) : (
@@ -731,20 +849,22 @@ export default function Reports(){
                       </defs>
                       <CartesianGrid stroke="var(--rpt-grid-line)" strokeDasharray="4 4" vertical={false}/>
                       <XAxis dataKey="label" tick={{fontSize:12,fill:'var(--rpt-tick)'}} tickLine={false} axisLine={false} interval={salesChart.length>20?Math.floor(salesChart.length/12):0}/>
-                      <YAxis tick={{fontSize:12,fill:'var(--rpt-tick)'}} tickLine={false} axisLine={false} tickFormatter={v=>v>=1000?`₱${Math.round(v/1000)}k`:`₱${v}`}/>
+                      <YAxis tick={{fontSize:12,fill:'var(--rpt-tick)'}} tickLine={false} axisLine={false}
+                        tickFormatter={v=>selectedCard==='transactions' ? v : (v>=1000?`₱${Math.round(v/1000)}k`:`₱${v}`)}/>
                       <Tooltip content={<SalesTip/>}/>
                       {period==='Today' ? (
+                        // Hourly bars instead of a curved line — a smooth curve
+                        // between hour buckets implies slopes that don't exist.
+                        CHART_SERIES[selectedCard].map((s,i)=>(
+                          <Bar key={s.key} dataKey={s.key} name={s.name} fill={s.color} radius={[4,4,0,0]} maxBarSize={i===0?22:12}/>
+                        ))
+                      ) : CHART_SERIES[selectedCard].length>1 ? (
                         <>
-                          {/* Hourly bars instead of a curved line — a smooth curve
-                              between hour buckets implies slopes that don't exist. */}
-                          <Bar dataKey="gross" name="Sales" fill="#059669" radius={[4,4,0,0]} maxBarSize={22}/>
-                          <Bar dataKey="returns" name="Returns" fill="#DC2626" radius={[4,4,0,0]} maxBarSize={12}/>
+                          <Area type="monotone" dataKey={CHART_SERIES[selectedCard][0].key} name={CHART_SERIES[selectedCard][0].name} stroke={CHART_SERIES[selectedCard][0].color} strokeWidth={2} fill="url(#rptGrossGradient)"/>
+                          <Line type="monotone" dataKey={CHART_SERIES[selectedCard][1].key} name={CHART_SERIES[selectedCard][1].name} stroke={CHART_SERIES[selectedCard][1].color} strokeWidth={2} dot={false}/>
                         </>
                       ) : (
-                        <>
-                          <Area type="monotone" dataKey="gross" name="Sales" stroke="#059669" strokeWidth={2} fill="url(#rptGrossGradient)"/>
-                          <Line type="monotone" dataKey="returns" name="Returns" stroke="#DC2626" strokeWidth={2} dot={false}/>
-                        </>
+                        <Area type="monotone" dataKey={CHART_SERIES[selectedCard][0].key} name={CHART_SERIES[selectedCard][0].name} stroke={CHART_SERIES[selectedCard][0].color} strokeWidth={2} fill="url(#rptGrossGradient)"/>
                       )}
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -755,6 +875,73 @@ export default function Reports(){
               <SalesBreakdownCard metrics={metrics}/>
             </div>
           </div>
+
+          {/* ── KPI card drill-down lists — Transactions/Returns & Refunds/Net Profit only ── */}
+          {selectedCard==='transactions' && (
+            <ChartCard title={`Transactions (${activeFiltered.length})`}
+              actions={activeFiltered.length>10 && <button className="rpt-btn-outline" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>txnHistoryRef.current?.scrollIntoView({behavior:'smooth',block:'start'})}>View all →</button>}>
+              <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                <table className="rpt-table">
+                  <thead><tr><th>Txn #</th><th>Time</th><th>Cashier</th><th>Customer</th><th>Payment</th><th className="num">Total</th></tr></thead>
+                  <tbody>
+                    {activeFiltered.length===0?<tr><td colSpan={6} style={{textAlign:'center',padding:30,color:'var(--rpt-muted)'}}>No transactions for this period.</td></tr>
+                    :activeFiltered.slice(0,10).map(tx=>(
+                      <tr key={tx.id} onClick={()=>setViewTxnId(tx.id)} style={{cursor:'pointer'}}>
+                        <td style={{color:'var(--rpt-green)',fontWeight:600}}>#{String(tx.id).padStart(4,'0')}</td>
+                        <td style={{color:'var(--rpt-muted)'}}>{new Date(tx.createdAt).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+                        <td>{tx.cashierName||'—'}</td>
+                        <td>{tx.customerName||'Walk-in'}</td>
+                        <td><span className="rpt-pill rpt-pill-gray"><span className="dot" style={{background:paymentColor(tx.payment)}}/>{tx.payment}</span></td>
+                        <td className="num" style={{fontWeight:700,color:'var(--rpt-title)'}}>{peso(tx.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div></div>
+            </ChartCard>
+          )}
+          {selectedCard==='returns' && (
+            <ChartCard title={`Returns & Refunds (${requestsForCard.length})`}>
+              <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                <table className="rpt-table">
+                  <thead><tr><th>Request #</th><th>Type</th><th>Status</th><th>Txn #</th><th className="num">Amount</th><th>Date</th></tr></thead>
+                  <tbody>
+                    {requestsForCard.length===0?<tr><td colSpan={6} style={{textAlign:'center',padding:30,color:'var(--rpt-muted)'}}>No approved returns or refunds for this period.</td></tr>
+                    :requestsForCard.slice(0,10).map(r=>(
+                      <tr key={`${r.kind}-${r.id}`} onClick={()=>setViewRequest({kind:r.kind, record:(r.kind==='return'?returns:refunds).find(x=>x.id===r.id)})} style={{cursor:'pointer'}}>
+                        <td style={{color:'var(--rpt-green)',fontWeight:600}}>{r.kind==='return'?'RET':'REF'} #{String(r.id).padStart(4,'0')}</td>
+                        <td style={{textTransform:'capitalize'}}>{r.kind}</td>
+                        <td><StatusBadge status={r.status} isLight/></td>
+                        <td style={{color:'var(--rpt-muted)'}}>#{String(r.transactionId).padStart(4,'0')}</td>
+                        <td className="num" style={{fontWeight:700,color:'var(--rpt-red)'}}>−{peso(r.amount)}</td>
+                        <td style={{color:'var(--rpt-muted)'}}>{fmtDate(r.date)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div></div>
+            </ChartCard>
+          )}
+          {selectedCard==='profit' && (
+            <ChartCard title="Top 5 Products by Profit">
+              <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                <table className="rpt-table">
+                  <thead><tr><th>Product</th><th className="num">Qty Sold</th><th className="num">Sales</th><th className="num">Profit</th></tr></thead>
+                  <tbody>
+                    {profitByProduct.length===0?<tr><td colSpan={4} style={{textAlign:'center',padding:30,color:'var(--rpt-muted)'}}>No sales for this period.</td></tr>
+                    :profitByProduct.slice(0,5).map(p=>(
+                      <tr key={p.name}>
+                        <td>{p.name}</td>
+                        <td className="num">{p.sold}</td>
+                        <td className="num">{peso(p.sales)}</td>
+                        <td className="num" style={{fontWeight:700,color:p.profit>=0?'var(--rpt-green)':'var(--rpt-red)'}}>{peso(p.profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div></div>
+            </ChartCard>
+          )}
 
           <div className="rpt-grid-12">
             <div className="rpt-col-4">
@@ -802,17 +989,19 @@ export default function Reports(){
             </div>
           </div>
 
-          <ChartCard title={`Transaction History (${filtered.length})`}>
+          <div ref={txnHistoryRef} />
+          <ChartCard title={`Transaction History (${txFiltered.length})`}
+            actions={<SegmentedControl size="sm" options={['All','Completed','Voided'].map(s=>({value:s,label:s}))} value={txStatusFilter} onChange={setTxStatusFilter}/>}>
             <div className="rpt-table-wrap"><div className="rpt-table-scroll">
               <table className="rpt-table">
                 <thead><tr>
                   <th>Txn #</th><th>Date & time</th><th>Customer</th><th>Items</th><th>Payment</th><th>GCash Ref. No.</th>
-                  <th className="num">Subtotal</th><th className="num">VAT</th><th className="num">Total</th>
+                  <th className="num">Subtotal</th><th className="num">VAT</th><th className="num">Total</th><th>Status</th>
                 </tr></thead>
                 <tbody>
-                  {filtered.length===0?<tr><td colSpan={9} style={{textAlign:'center',padding:40,color:'var(--rpt-muted)'}}>No transactions for this period.</td></tr>
+                  {txFiltered.length===0?<tr><td colSpan={10} style={{textAlign:'center',padding:40,color:'var(--rpt-muted)'}}>No transactions for this period.</td></tr>
                   :txPg.pageItems.map(tx=>(
-                    <tr key={tx.id}>
+                    <tr key={tx.id} onClick={()=>setViewTxnId(tx.id)} style={{cursor:'pointer'}}>
                       <td style={{color:'var(--rpt-green)',fontWeight:600}}>#{String(tx.id).padStart(4,'0')}</td>
                       <td style={{color:'var(--rpt-muted)'}}>{new Date(tx.createdAt).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
                       <td>{tx.customerName||'Walk-in'}</td>
@@ -821,7 +1010,11 @@ export default function Reports(){
                       <td style={{color:'var(--rpt-muted)',fontFamily:"'JetBrains Mono',monospace",fontSize:11.5}}>{tx.gcashReference||'—'}</td>
                       <td className="num">{peso(tx.subtotal||tx.total)}</td>
                       <td className="num" style={{color:'var(--rpt-muted)'}}>{peso(tx.vat||0)}</td>
-                      <td className="num" style={{fontWeight:700,color:'var(--rpt-title)'}}>{peso(tx.total)}</td>
+                      <td className="num" style={{fontWeight:700,color:'var(--rpt-title)',textDecoration:tx.status==='Voided'?'line-through':'none'}}>{peso(tx.total)}</td>
+                      <td>{tx.status==='Voided'
+                        ? <span style={{fontSize:9.5,fontWeight:700,padding:'2px 7px',borderRadius:99,background:'rgba(239,68,68,0.12)',color:'var(--rpt-red)'}}>VOIDED</span>
+                        : <span style={{fontSize:9.5,fontWeight:700,padding:'2px 7px',borderRadius:99,background:'var(--rpt-green-light)',color:'var(--rpt-green)'}}>{tx.status||'Completed'}</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1199,6 +1392,24 @@ export default function Reports(){
 
         </div>
       </div>
+
+      <TransactionDetailsModal open={!!viewTxnId} onClose={()=>setViewTxnId(null)} transactionId={viewTxnId} />
+
+      {/* Returns & Refunds card drill-down — every row here is already
+          Approved, so neither modal ever actually renders an approve/
+          reject action for it; the handlers are no-ops only because
+          they're structurally required props, never because they're
+          expected to fire. */}
+      <ReturnDetailsModal
+        open={viewRequest?.kind==='return'} onClose={()=>setViewRequest(null)}
+        record={viewRequest?.kind==='return'?viewRequest.record:null} isAdmin={role==='admin'}
+        onApprove={()=>{}} onReject={async()=>({})}
+      />
+      <RefundDetailsModal
+        open={viewRequest?.kind==='refund'} onClose={()=>setViewRequest(null)}
+        record={viewRequest?.kind==='refund'?viewRequest.record:null} isAdmin={role==='admin'}
+        onApprove={()=>{}} onReject={async()=>({})}
+      />
     </div>
   )
 }

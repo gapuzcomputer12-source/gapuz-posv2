@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { supabase } from '../lib/supabaseClient'
-import { getEffectiveLowStockLevel } from '../utils/helpers'
+import { getEffectiveLowStockLevel, refundSettledAmount, moneyBackReturnSettledAmount } from '../utils/helpers'
 import { TIERS, getTier } from '../utils/loyalty'
 
 // Password-reset emails must always point at the stable production URL, not
@@ -167,6 +167,31 @@ function notifyLowStock(product, level = 'out') {
 function notifyRequestAlert(type, id) {
   supabase.functions.invoke('send-request-alert', { body: { type, id } })
     .then(({ error }) => { if (error) console.error('request alert failed:', error.message) })
+}
+
+// Fire-and-forget: emails every active admin when a CASHIER voids one of
+// their own sales — the edge function itself re-checks the caller's role
+// and silently skips when it's not 'cashier' (no email when the admin
+// voids), so this is safe to call unconditionally after any successful
+// void. A failure here never undoes the void — see voidTransaction below.
+function notifyVoidAlert(txnId) {
+  supabase.functions.invoke('send-void-alert', { body: { txnId } })
+    .then(({ error }) => { if (error) console.error('void alert failed:', error.message) })
+}
+
+// Cancels a whole sale — no admin approval needed, same-day/15-minute/
+// own-sale/no-pending-request rules all enforced server-side inside
+// void_transaction itself (see add_void_transaction.sql); this is just the
+// thin wrapper plus the admin email, fired only once the void itself has
+// actually succeeded. Returns { error } with the RPC's exact message
+// (e.g. "Void time limit passed (15 minutes). Please ask the admin.") so
+// the UI can show it as-is.
+export async function voidTransaction(txnId, reason) {
+  const { error } = await supabase.rpc('void_transaction', { p_txn_id: txnId, p_reason: reason })
+  if (error) return { error }
+  await useTransactionStore.getState().fetchTransactions()
+  notifyVoidAlert(txnId)
+  return { error: null }
 }
 
 // Fire-and-forget: emails the customer the moment a sale's earned points
@@ -707,7 +732,7 @@ export const useRewardStore = create((set, get) => ({
 }))
 
 // ── TRANSACTION STORE ────────────────────────────────────────────
-const TXN_SELECT = 'id:transaction_id, customerId:customer_id, customerName:customer_name, payment, subtotal, discAmt:disc_amt, vat, total, cashGiven:cash_given, status, cashierName:cashier_name, gcashReference:gcash_reference, createdAt:created_at'
+const TXN_SELECT = 'id:transaction_id, customerId:customer_id, customerName:customer_name, payment, subtotal, discAmt:disc_amt, vat, total, cashGiven:cash_given, status, cashierName:cashier_name, cashierId:cashier_id, gcashReference:gcash_reference, createdAt:created_at'
 
 export const useTransactionStore = create((set, get) => ({
   transactions: [],
@@ -958,6 +983,52 @@ export async function fetchTransactionSettlement(txnId) {
     serialStatuses: row.serial_statuses || [], // [{itemId,productId,serial,status:'returned'|'pending'}]
     itemQtyClaimed: row.item_qty_claimed || [], // [{itemId,productId,returnedQty,pendingQty}]
   }
+}
+
+// Everything the TransactionDetailsModal shows, in one gated call — see
+// add_transaction_details.sql. Unlike get_transaction_settlement (returns
+// table(...), so PostgREST hands back an array), this function returns a
+// single jsonb value, which PostgREST/supabase-js already hand back as the
+// plain JS object — no array unwrap, and every field is already camelCase
+// since the SQL builds it with jsonb_build_object('camelKey', ...) itself.
+// Returns null (never throws) on any error — including the RPC's own
+// "Not authorized to view this transaction" — so the modal can show one
+// generic "couldn't load" state rather than leaking the raw Postgres error.
+export async function fetchTransactionDetails(txnId) {
+  const { data, error } = await supabase.rpc('get_transaction_details', { p_transaction_id: txnId })
+  if (error || !data) return null
+  return data
+}
+
+// Reverses an APPROVED refund's loyalty-points impact on the customer
+// (points, purchase count, total spent) — same formula revertPurchase uses
+// elsewhere, and the one approve_return applies server-side for
+// money-back returns. "Fully settled" is checked across BOTH refunds and
+// money-back returns (the flat +10/purchase-count bonus should only flip
+// once the whole transaction is actually paid back, through whichever mix
+// of the two channels got it there). Moved here (was page-local to
+// Refunds.jsx) so TransactionDetailsModal.jsx's "approve this refund from
+// wherever it was opened" can call the exact same side effect instead of
+// re-deriving it — reads the other stores via .getState() since it isn't
+// itself a hook.
+// Thin wrapper around the same send-receipt edge function Cart.jsx already
+// calls at checkout — reused here for TransactionDetailsModal's "Email
+// Receipt" action on a HISTORICAL sale.
+export async function emailReceipt(email, txn) {
+  const { error } = await supabase.functions.invoke('send-receipt', { body: { email, txn } })
+  return { error }
+}
+
+export async function syncRefundToTransaction(r) {
+  const txn = useTransactionStore.getState().transactions.find(tx => tx.id === r.transactionId)
+  if (!txn || !txn.customerId) return
+  const refunds = useRefundStore.getState().refunds
+  const returns = useReturnStore.getState().returns
+  const settledBefore = refundSettledAmount(txn.id, refunds, { excludeIds: [r.id] }) + moneyBackReturnSettledAmount(txn.id, returns)
+  const settledAfter = settledBefore + r.total
+  const wasFullBefore = settledBefore >= txn.total
+  const isFullAfter = settledAfter >= txn.total
+  await useCustomerStore.getState().revertPurchase(txn.customerId, { refundTotal: r.total, fullRefund: !wasFullBefore && isFullAfter })
 }
 
 // Refunds' Details-step summary card shows serials per item too, but

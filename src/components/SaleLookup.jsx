@@ -129,10 +129,16 @@ export default function SaleLookup({ mode, onSaleFound }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {recent.map(tx => {
+              const isVoidedTxn = tx.status === 'Voided'
               const settlement = settlements[tx.id]
               const settled = settlement?.status === 'settled'
               const pending = settlement?.status === 'pending'
-              const statusPill = pillFor(settlement)
+              // A voided sale always wins over whatever the settlement
+              // would otherwise show — void_transaction itself refuses to
+              // void a sale with any return/refund on it, so a voided row
+              // would normally read 'available' here anyway; this just
+              // makes the badge explicit rather than silently blank.
+              const statusPill = isVoidedTxn ? { label: 'Voided', tone: 'muted' } : pillFor(settlement)
               const daysSince = differenceInCalendarDays(new Date(), new Date(tx.createdAt))
               const daysLeft = SALE_ADJUSTMENT_DAYS - daysSince
               const timeExpired = daysLeft < 0
@@ -140,7 +146,7 @@ export default function SaleLookup({ mode, onSaleFound }) {
               // recent list changes) is treated as not-yet-clickable too,
               // rather than flashing a row clickable that turns out to be
               // settled/pending a moment later.
-              const fullyClaimed = !settlement || settled || pending
+              const fullyClaimed = !settlement || settled || pending || isVoidedTxn
               const expired = timeExpired || fullyClaimed
               const items = tx.items || []
               return (

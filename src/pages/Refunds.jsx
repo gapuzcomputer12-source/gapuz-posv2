@@ -2,9 +2,9 @@ import { useState, useMemo, useEffect, useRef, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { differenceInCalendarDays } from 'date-fns'
 import { RefreshCw, ClipboardList, Clock, CheckCircle2, Eye, Tag, AlertTriangle, Check, Info } from 'lucide-react'
-import { useRefundStore, useTransactionStore, useAuthStore, useCustomerStore, useProductStore, useAppStore, useReturnStore, resolveLookupId, fetchSaleSerialsByProduct, fetchTransactionSettlement } from '../store'
+import { useRefundStore, useTransactionStore, useAuthStore, useCustomerStore, useProductStore, useAppStore, useReturnStore, resolveLookupId, fetchSaleSerialsByProduct, fetchTransactionSettlement, syncRefundToTransaction } from '../store'
 import { useToast } from '../utils/toast'
-import { useT, peso, fmtDate, isValidEmail, SALE_ADJUSTMENT_DAYS, REFUND_REASONS, REFUND_REASON_OTHER, refundSettledAmount, moneyBackReturnSettledAmount } from '../utils/helpers'
+import { useT, peso, fmtDate, isValidEmail, SALE_ADJUSTMENT_DAYS, REFUND_REASONS, REFUND_REASON_OTHER, refundSettledAmount } from '../utils/helpers'
 import RefundDetailsModal, { StatusBadge, METHOD_ICON } from '../components/RefundDetailsModal'
 import TransactionSummaryCard from '../components/TransactionSummaryCard'
 import PolicyModal from '../components/PolicyModal'
@@ -195,6 +195,7 @@ export default function Refunds() {
     const txnId = await resolveLookupId(trimmed)
     const txn = txnId != null ? transactions.find(tx => tx.id === txnId) : null
     if (!txn) return { ok: false, message: t('txn_not_found') }
+    if (txn.status === 'Voided') return { ok: false, message: 'This sale was voided and cannot be refunded' }
     const daysSinceTxn = differenceInCalendarDays(new Date(), new Date(txn.createdAt))
     if (daysSinceTxn > SALE_ADJUSTMENT_DAYS) return { ok: false, message: `Refund period expired: refunds can only be requested within ${SALE_ADJUSTMENT_DAYS} days of purchase` }
     // Single source of truth for "is there anything left to claim here" —
@@ -223,6 +224,17 @@ export default function Refunds() {
     setStep(2)
     return { ok: true, message: `Found #${String(txn.id).padStart(4, '0')}` }
   }
+
+  // Deep-link from TransactionDetailsModal's "Start Refund" button
+  // (navigate('/refunds?txn=<id>')) — same guarded-once pattern as
+  // Returns.jsx's identical effect.
+  const consumedTxnParam = useRef(false)
+  useEffect(() => {
+    const txnParam = searchParams.get('txn')
+    if (!txnParam || consumedTxnParam.current) return
+    consumedTxnParam.current = true
+    handleLookup(txnParam)
+  }, [searchParams])
 
   const goToStep3 = () => {
     if (!details.reason) return toast('Please select a reason', 'error')
@@ -279,24 +291,6 @@ export default function Refunds() {
     setClientRequestId(null)
     setNotifyEmail(''); setUseDifferentEmail(false); setNotifyEmailTouched(false)
     setSaleSerials([]); setGcashRef(''); setGcashRefTouched(false)
-  }
-
-  // Reverses this refund's loyalty-points impact on the customer (points,
-  // purchase count, total spent) — same formula revertPurchase uses
-  // elsewhere, and the one approve_return applies server-side for
-  // money-back returns. "Fully settled" is checked across BOTH refunds and
-  // money-back returns (the flat +10/purchase-count bonus should only flip
-  // once the whole transaction is actually paid back, through whichever
-  // mix of the two channels got it there), but the transaction's own
-  // status field (above) stays refunds-only by design.
-  const syncRefundToTransaction = async (r) => {
-    const txn = transactions.find(tx => tx.id === r.transactionId)
-    if (!txn || !txn.customerId) return
-    const settledBefore = refundSettledAmount(txn.id, refunds, { excludeIds: [r.id] }) + moneyBackReturnSettledAmount(txn.id, returns)
-    const settledAfter = settledBefore + r.total
-    const wasFullBefore = settledBefore >= txn.total
-    const isFullAfter = settledAfter >= txn.total
-    await revertPurchase(txn.customerId, { refundTotal: r.total, fullRefund: !wasFullBefore && isFullAfter })
   }
 
   // ── Shared styles ─────────────────────────────────────────

@@ -21,6 +21,7 @@ const ACTION_BADGE = {
   redeemed:    'badge-accent',
   claimed:     'badge-accent',
   email:       'badge-blue',
+  voided:      'badge-red',
   'logged in':  'badge-blue',
   'logged out': 'badge-gray',
 }

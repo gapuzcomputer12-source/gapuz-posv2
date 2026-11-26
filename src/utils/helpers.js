@@ -168,12 +168,6 @@ export const RETURN_REASONS = ['Defective product','Wrong item delivered','Custo
 // keep them in sync by hand if this ever changes.
 export const SALE_ADJUSTMENT_DAYS = 7
 
-// Single source of truth for the Slow-Moving Products window used by both
-// Dashboard's and Reports' widgets: no sale in this many days, and the
-// product must have existed for at least this many days (so new stock
-// isn't flagged before it's had a chance to sell).
-export const SLOW_MOVING_DAYS = 30
-
 // Sum of this transaction's refund.total across non-excluded refunds —
 // refunds are money-only now (no item/qty breakdown), so "how much has
 // already been refunded" is just a sum of amounts, not item quantities.
@@ -194,6 +188,20 @@ export function moneyBackReturnSettledAmount(txnId, returns, { approvedOnly = tr
 
 export function totalSettledAmount(txnId, refunds, returns, opts) {
   return refundSettledAmount(txnId, refunds, opts) + moneyBackReturnSettledAmount(txnId, returns, opts)
+}
+
+// Cosmetic wording over a get_transaction_settlement result (see
+// store/index.js's fetchTransactionSettlement/fetchTransactionDetails) —
+// the underlying status itself (available/partial/pending/settled) is
+// always the server's call, never re-derived here. Shared by
+// TransactionSummaryCard.jsx and TransactionDetailsModal.jsx so the same
+// settlement can never read as two different labels in two places.
+export function settlementStatusLabel(settlement) {
+  if (!settlement) return 'Completed'
+  if (settlement.status === 'pending') return `Pending ${settlement.pendingKind === 'return' ? 'Return' : 'Refund'} #${String(settlement.pendingId).padStart(4, '0')}`
+  if (settlement.status === 'settled') return settlement.approvedReturned >= settlement.amountPaid ? 'Fully Returned' : 'Fully Refunded'
+  if (settlement.status === 'partial') return settlement.approvedReturned > 0 ? 'Partially Returned' : 'Partially Refunded'
+  return 'Completed'
 }
 
 // Categories now live in the `categories` table (see useCategoryStore) so admins can

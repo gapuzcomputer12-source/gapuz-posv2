@@ -142,6 +142,7 @@ export default function Returns() {
     const sale = await findSaleForReturn(query)
     if (!sale) return { ok: false, message: t('txn_not_found') }
     if (!sale.items.length) return { ok: false, message: 'No items found for this sale' }
+    if (sale.status === 'Voided') return { ok: false, message: 'This sale was voided and cannot be returned' }
     const daysSinceSale = differenceInCalendarDays(new Date(), new Date(sale.createdAt))
     if (daysSinceSale > SALE_ADJUSTMENT_DAYS) return { ok: false, message: `Return period expired: items can only be returned within ${SALE_ADJUSTMENT_DAYS} days of purchase` }
     // Single source of truth for "is there anything left to claim here" —
@@ -167,6 +168,21 @@ export default function Returns() {
     setStep(2)
     return { ok: true, message: `Found ${sale.id ? `#${String(sale.id).padStart(4, '0')}` : 'sale'}` }
   }
+
+  // Deep-link from TransactionDetailsModal's "Start Return" button
+  // (navigate('/returns?txn=<id>')) — auto-runs the lookup once so the
+  // wizard lands straight on step 2 with that sale already selected,
+  // instead of making the cashier re-type/re-scan the id they just came
+  // from. Guarded by a ref (not state) so it fires exactly once even
+  // though handleLookup itself changes `step`, which would otherwise
+  // re-run a naive effect keyed on step.
+  const consumedTxnParam = useRef(false)
+  useEffect(() => {
+    const txnParam = searchParams.get('txn')
+    if (!txnParam || consumedTxnParam.current) return
+    consumedTxnParam.current = true
+    handleLookup(txnParam)
+  }, [searchParams])
 
   const toggleItem = (itemId) => {
     setReturnItems(prev => ({ ...prev, [itemId]: { ...prev[itemId], selected: !prev[itemId]?.selected } }))

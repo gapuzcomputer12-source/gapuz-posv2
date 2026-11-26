@@ -7,6 +7,7 @@ import ProductThumb from './ProductThumb'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from './Pagination'
 import Modal from './Modal'
+import TransactionDetailsModal from './TransactionDetailsModal'
 
 const FILTERS = ['all', 'completed', 'refunded']
 
@@ -24,24 +25,29 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
   const [filterStatus, setFilterStatus] = useState('all')
   const [expanded, setExpanded] = useState({})
   const [showTip, setShowTip] = useState(false)
+  const [viewTxnId, setViewTxnId] = useState(null)
 
   // Reset transient UI state whenever a different customer's history opens,
   // so filters/expanded rows from the last customer don't carry over.
   useEffect(() => {
-    if (open) { setFilterStatus('all'); setExpanded({}); setShowTip(false) }
+    if (open) { setFilterStatus('all'); setExpanded({}); setShowTip(false); setViewTxnId(null) }
   }, [open, customer?.id])
 
   const isRefunded = tx => tx.status === 'Refunded'
   const isPartial  = tx => tx.status === 'Partially Refunded'
-  const isVoided   = tx => isRefunded(tx) || isPartial(tx)
+  // Named for what it actually means (money came back) — kept distinct
+  // from the unrelated "Voided" transaction status (a whole sale
+  // cancelled outright, see isCancelled in the per-row map below), which
+  // happens to use the same English word for something else entirely.
+  const isMoneyReversed = tx => isRefunded(tx) || isPartial(tx)
 
   // custTxns/filteredTxns and the pagination hook below must run on every
   // render (Rules of Hooks), so they're computed above the early return —
   // customer?.id keeps this safe while the modal is closed.
   const custTxns = transactions.filter(tx => tx.customerId === customer?.id)
   const filteredTxns = custTxns.filter(tx => {
-    if (filterStatus === 'completed') return !isVoided(tx)
-    if (filterStatus === 'refunded')  return isVoided(tx)
+    if (filterStatus === 'completed') return !isMoneyReversed(tx)
+    if (filterStatus === 'refunded')  return isMoneyReversed(tx)
     return true
   })
   const pg = usePagination(filteredTxns)
@@ -284,6 +290,10 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
               const refunded = isRefunded(tx)
               const partial  = isPartial(tx)
               const voided   = refunded || partial
+              // A whole-sale void is a different thing from money being
+              // refunded back — but it gets the exact same dimmed/
+              // struck-through treatment, plus its own red badge below.
+              const cancelled = tx.status === 'Voided'
               const refundedAmt = voided ? refundedAmountFor(tx.id) : 0
               const ptsEarned   = 10 + Math.floor((tx.total || 0) / 100)
               const ptsReversed = (refunded ? 10 : 0) + Math.floor(refundedAmt / 100)
@@ -296,17 +306,20 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
               return (
                 <div key={tx.id} style={{
                   padding: 14, borderRadius: 12, border: '1px solid var(--border)',
-                  background: voided ? 'var(--bg3)' : 'var(--bg2)',
-                  opacity: voided ? 0.72 : 1,
+                  background: (voided || cancelled) ? 'var(--bg3)' : 'var(--bg2)',
+                  opacity: (voided || cancelled) ? 0.72 : 1,
                   transition: 'opacity .2s',
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
                     <div>
                       <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--accent)' }}>#{String(tx.id).padStart(4, '0')}</div>
                       <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{fmtDateTime(tx.createdAt)}</div>
+                      <button type="button" onClick={() => setViewTxnId(tx.id)} style={{ background: 'none', border: 'none', padding: 0, marginTop: 4, color: 'var(--accent)', fontSize: 10.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                        View details
+                      </button>
                     </div>
                     <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: voided ? 'var(--text3)' : 'var(--text)', textDecoration: voided ? 'line-through' : 'none' }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: (voided || cancelled) ? 'var(--text3)' : 'var(--text)', textDecoration: (voided || cancelled) ? 'line-through' : 'none' }}>
                         {peso(tx.total)}
                       </div>
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text3)', marginTop: 4, justifyContent: 'flex-end' }}>
@@ -336,7 +349,9 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-                    {refunded ? (
+                    {cancelled ? (
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)' }}>No points — sale voided</span>
+                    ) : refunded ? (
                       <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>−{ptsReversed} {t('pts_reversed_suffix')}</span>
                     ) : partial ? (
                       <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--yellow)', fontVariantNumeric: 'tabular-nums' }}>−{ptsReversed} {t('pts_reversed_suffix')}</span>
@@ -344,6 +359,11 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
                       <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>+{ptsEarned} {t('pts_earned_suffix')}</span>
                     )}
 
+                    {cancelled && (
+                      <span style={{ fontSize: 9.5, fontWeight: 700, padding: '3px 9px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '.4px', background: 'rgba(239,68,68,0.12)', color: 'var(--red)', border: '1px solid rgba(239,68,68,0.25)' }}>
+                        Voided
+                      </span>
+                    )}
                     {refunded && (
                       <span style={{ fontSize: 9.5, fontWeight: 700, padding: '3px 9px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '.4px', background: 'rgba(239,68,68,0.12)', color: 'var(--red)', border: '1px solid rgba(239,68,68,0.25)' }}>
                         {t('refunded_status')}
@@ -362,6 +382,8 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
           </div>
         </div>
       </div>
+
+      <TransactionDetailsModal open={!!viewTxnId} onClose={() => setViewTxnId(null)} transactionId={viewTxnId} />
     </Modal>
   )
 }

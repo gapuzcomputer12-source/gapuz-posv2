@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Pencil, Gift } from 'lucide-react'
 import { useCustomerStore } from '../store'
 import { useToast } from '../utils/toast'
@@ -55,6 +56,21 @@ export default function Customers() {
   const openAdd  = () => setAddOpen(true)
   const openEdit = c => { setForm({name:c.name,email:c.email||'',phone:toPHPhone(c.phone||''),address:c.address||''}); setSelected(c); setModal('edit') }
   const openHistory = c => { setSelected(c); setModal('history') }
+
+  // Deep-link from TransactionDetailsModal's "View customer" link
+  // (navigate('/customers?view=<id>')) — auto-opens that customer's
+  // history once the list has loaded. Guarded by a ref (not state) so it
+  // fires exactly once even after customers re-fetches.
+  const [searchParams] = useSearchParams()
+  const consumedViewParam = useRef(false)
+  useEffect(() => {
+    const viewId = searchParams.get('view')
+    if (!viewId || consumedViewParam.current || customers.length === 0) return
+    const c = customers.find(c => c.id === Number(viewId))
+    if (!c) return
+    consumedViewParam.current = true
+    openHistory(c)
+  }, [searchParams, customers])
   const openRedeem  = c => { setSelected(c); setModal('redeem') }
 
   const handlePhoneChange = e => setForm(f=>({...f, phone: toPHPhone(e.target.value)}))

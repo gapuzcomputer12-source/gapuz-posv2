@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { CheckCircle, AlertTriangle, Banknote, Smartphone, Tag, Package } from 'lucide-react'
 import ProductThumb from './ProductThumb'
 import { StatusBadge } from './RefundDetailsModal'
-import { peso, fmtDate, fmtDateTime, SALE_ADJUSTMENT_DAYS } from '../utils/helpers'
+import { peso, fmtDate, fmtDateTime, SALE_ADJUSTMENT_DAYS, settlementStatusLabel } from '../utils/helpers'
 import { getTier } from '../utils/loyalty'
 
 const METHOD_ICON = { Cash: Banknote, GCash: Smartphone }
@@ -15,26 +15,15 @@ const SALE_STATUS_STYLE = {
   Refunded:             { color: 'var(--red)',   bg: 'rgba(239,68,68,0.1)',     border: 'rgba(239,68,68,0.3)' },
 }
 
-function SaleStatusBadge({ label }) {
+// Exported so TransactionDetailsModal.jsx renders the identical badge for
+// the identical label — one definition, not a second copy.
+export function SaleStatusBadge({ label }) {
   const s = SALE_STATUS_STYLE[label] || SALE_STATUS_STYLE.Completed
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 9px', borderRadius: 99, fontSize: 10, fontWeight: 700, color: s.color, background: s.bg, border: `1px solid ${s.border}` }}>
       {label}
     </span>
   )
-}
-
-// Cosmetic wording only — settlement.status itself (available/partial/
-// pending/settled) is the server's call (get_transaction_settlement); a
-// 'pending'/'settled' sale never actually reaches this card since
-// Returns.jsx/Refunds.jsx's handleLookup already rejects those before
-// step 2, but the fallback wording is kept here in case that ever changes.
-function statusLabelFor(settlement) {
-  if (!settlement) return 'Completed'
-  if (settlement.status === 'pending') return `Pending ${settlement.pendingKind === 'return' ? 'Return' : 'Refund'} #${String(settlement.pendingId).padStart(4, '0')}`
-  if (settlement.status === 'settled') return settlement.approvedReturned >= settlement.amountPaid ? 'Fully Returned' : 'Fully Refunded'
-  if (settlement.status === 'partial') return settlement.approvedReturned > 0 ? 'Partially Returned' : 'Partially Refunded'
-  return 'Completed'
 }
 
 function TierBadge({ points }) {
@@ -93,7 +82,7 @@ function unitBreakdown(item, settlement) {
 // items and their current availability, how much of it is already spoken
 // for, and any other request already filed against it.
 export default function TransactionSummaryCard({ txn, items, products, customer, returns, refunds, settlement, daysSince, expired, isLight }) {
-  const statusLabel = statusLabelFor(settlement)
+  const statusLabel = settlementStatusLabel(settlement)
   const alreadyReturned = settlement?.approvedReturned || 0
   const alreadyRefunded = settlement?.approvedRefunded || 0
   const remaining = settlement ? settlement.remainingRefundable : (txn.total || 0)

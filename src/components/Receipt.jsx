@@ -2,11 +2,20 @@ import { forwardRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { peso, fmtDateTime } from '../utils/helpers'
 
-const Receipt = forwardRef(function Receipt({ txn, role }, ref) {
+const Receipt = forwardRef(function Receipt({ txn, role, reprint, voided }, ref) {
   if(!txn) return null
   const qrData = JSON.stringify({ id:String(txn.id).padStart(4,'0'), date:txn.createdAt, total:txn.total, shop:'Gapuz POS' })
   return (
     <div id="receipt-printable" ref={ref} style={{ background:'#fff', color:'#000', fontFamily:"'Courier New',monospace", fontSize:11, padding:20, width:300, margin:'0 auto' }}>
+      {voided ? (
+        <div style={{textAlign:'center',fontSize:12,fontWeight:800,letterSpacing:'1px',color:'#dc2626',border:'2px dashed #dc2626',borderRadius:4,padding:'5px 0',marginBottom:10}}>
+          *** VOIDED ***
+        </div>
+      ) : reprint && (
+        <div style={{textAlign:'center',fontSize:10,fontWeight:700,letterSpacing:'1px',color:'#555',border:'1px dashed #999',borderRadius:4,padding:'3px 0',marginBottom:10}}>
+          REPRINT
+        </div>
+      )}
       <div style={{textAlign:'center',paddingBottom:10,borderBottom:'1px dashed #ccc',marginBottom:10}}>
         <div style={{fontSize:16,fontWeight:700}}>GAPUZ COMPUTER</div>
         <div style={{fontWeight:700}}>SERVICES & ACCESSORIES</div>

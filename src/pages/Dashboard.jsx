@@ -4,14 +4,15 @@ import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Respon
 import { startOfDay, endOfDay, subDays } from 'date-fns'
 import { Hand, Clock, ChevronRight, Trophy, Package, Receipt, ClipboardList, Wallet, Calculator, PauseCircle } from 'lucide-react'
 import { useTransactionStore, useProductStore, useAuthStore, useRefundStore, useReturnStore, useHoldStore, useAppStore, useCategoryStore } from '../store'
-import { useT, peso, pesoCompact, paymentDisplay, fmtDate, SLOW_MOVING_DAYS, getEffectiveLowStockLevel } from '../utils/helpers'
-import { computeSalesMetrics, getDailySeries } from '../utils/salesMetrics'
+import { useT, peso, pesoCompact, paymentDisplay, fmtDate, getEffectiveLowStockLevel } from '../utils/helpers'
+import { computeSalesMetrics, getDailySeries, computeSlowMoving } from '../utils/salesMetrics'
 import { StatusBadge } from '../components/RefundDetailsModal'
 import StatCard from '../components/StatCard'
 import ChartCard from '../components/ChartCard'
 import RankedList from '../components/RankedList'
 import DonutCard from '../components/DonutCard'
 import Modal from '../components/Modal'
+import TransactionDetailsModal from '../components/TransactionDetailsModal'
 import Pagination from '../components/Pagination'
 import { usePagination } from '../hooks/usePagination'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
@@ -98,7 +99,7 @@ function MyRequestsModal({ open, onClose, requests, isLight }) {
 // "View all" for the cashier's own transactions — same reasoning as
 // MyRequestsModal above (no store-wide page to link to that's still
 // scoped to just this cashier, so a self-contained modal instead).
-function MyTransactionsModal({ open, onClose, transactions }) {
+function MyTransactionsModal({ open, onClose, transactions, onOpenTxn }) {
   const pg = usePagination(transactions, 8)
   if (!open) return null
   return (
@@ -116,15 +117,19 @@ function MyTransactionsModal({ open, onClose, transactions }) {
               <Receipt size={30} style={{ opacity: .2, marginBottom: 8 }} /><div>No transactions yet.</div>
             </div>
           ) : pg.pageItems.map(tx => (
-            <div key={tx.id} className="card-surface" style={{ padding: 12, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+            <div key={tx.id} className="card-surface" onClick={() => onOpenTxn(tx.id)}
+              style={{ padding: 12, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)' }}>#{String(tx.id).padStart(4, '0')}</div>
                 <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{new Date(tx.createdAt).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {tx.customerName || 'Walk-in'}</div>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: 'var(--bg4)', border: '1px solid var(--border2)', color: 'var(--text2)', marginTop: 4 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: paymentColor(tx.payment) }} />{paymentDisplay(tx.payment).label}
-                </span>
+                <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: 'var(--bg4)', border: '1px solid var(--border2)', color: 'var(--text2)' }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: paymentColor(tx.payment) }} />{paymentDisplay(tx.payment).label}
+                  </span>
+                  {tx.status === 'Voided' && <span style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: 'rgba(239,68,68,0.12)', color: 'var(--red)' }}>VOIDED</span>}
+                </div>
               </div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', flexShrink: 0 }}>{peso(tx.total)}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', flexShrink: 0, textDecoration: tx.status === 'Voided' ? 'line-through' : 'none' }}>{peso(tx.total)}</div>
             </div>
           ))}
         </div>
@@ -159,6 +164,7 @@ export default function Dashboard() {
   const stockPopoverRef = useRef(null)
   const [viewAllRequests, setViewAllRequests] = useState(false)
   const [viewAllTxns, setViewAllTxns] = useState(false)
+  const [viewTxnId, setViewTxnId] = useState(null)
 
   useEffect(() => {
     if (!stockPopover) return
@@ -172,7 +178,6 @@ export default function Dashboard() {
   const today = startOfDay(now)
   const yest  = subDays(today, 1)
   const thirtyAgo = startOfDay(subDays(now, 29))
-  const slowMovingCutoff = subDays(now, SLOW_MOVING_DAYS)
 
   const myName = user?.user_metadata?.name || user?.email?.split('@')[0] || ''
   const hour     = now.getHours()
@@ -180,7 +185,12 @@ export default function Dashboard() {
 
   // ── Shared (both roles) ───────────────────────────────────
   const isService = (productId) => !!products.find(p => p.id === productId)?.isService
-  const todayTxns = useMemo(() => transactions.filter(tx => { const d = new Date(tx.createdAt); d.setHours(0, 0, 0, 0); return d.getTime() === today.getTime() }), [transactions, today])
+  // Voided sales never happened as far as any of these totals are
+  // concerned — todayTxns only ever feeds counts/sums here (the Recent
+  // Transactions table below reads the raw `transactions` list directly,
+  // so a voided row still shows there with its badge).
+  const isSameDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime() === today.getTime() }
+  const todayTxns = useMemo(() => transactions.filter(tx => tx.status !== 'Voided' && isSameDay(tx.createdAt)), [transactions, today])
   const itemsSoldToday = useMemo(() => todayTxns.reduce((s, tx) => s + (tx.items || []).reduce((a, i) => a + (isService(i.id) ? 0 : i.qty), 0), 0), [todayTxns, products])
   const lowStock = useMemo(() => products.filter(p => p.stock > 0 && !p.isService && p.stock <= getEffectiveLowStockLevel(p, categories)), [products, categories])
   const outStock = useMemo(() => products.filter(p => p.stock === 0 && !p.isService), [products])
@@ -199,7 +209,7 @@ export default function Dashboard() {
   const payData30 = useMemo(() => {
     const map = {}
     transactions.forEach(tx => {
-      if (new Date(tx.createdAt) < thirtyAgo) return
+      if (tx.status === 'Voided' || new Date(tx.createdAt) < thirtyAgo) return
       const label = paymentDisplay(tx.payment).label
       map[label] = (map[label] || 0) + tx.total
     })
@@ -209,7 +219,7 @@ export default function Dashboard() {
   const topProds30 = useMemo(() => {
     const map = {}
     transactions.forEach(tx => {
-      if (new Date(tx.createdAt) < thirtyAgo) return
+      if (tx.status === 'Voided' || new Date(tx.createdAt) < thirtyAgo) return
       ;(tx.items || []).forEach(i => {
         if (isService(i.id)) return
         if (!map[i.name]) map[i.name] = { name: i.name, sold: 0, revenue: 0 }
@@ -222,13 +232,11 @@ export default function Dashboard() {
   const topBasis = p => topMetric === 'qty' ? p.sold : p.revenue
   const topMax = topProds30[0] ? topBasis(topProds30[0]) : 1
 
-  const slowMoving = useMemo(() => products
-    .filter(p => !p.isService && p.isAvailable !== false && p.stock > 0
-      && (!p.lastSoldAt || new Date(p.lastSoldAt) < slowMovingCutoff)
-      && p.createdAt && new Date(p.createdAt) <= slowMovingCutoff)
-    .map(p => ({ ...p, tiedUp: (p.stock || 0) * (p.costPrice || 0) }))
-    .sort((a, b) => b.tiedUp - a.tiedUp)
-    .slice(0, 5), [products, slowMovingCutoff])
+  // Same calculation as Reports.jsx's own Slow-Moving Products section
+  // (see computeSlowMoving in salesMetrics.js) — this used to be a second,
+  // simpler formula here (just lastSoldAt vs. a flat 30-day cutoff) that
+  // could and did disagree with Reports' list for the same product.
+  const slowMoving = useMemo(() => computeSlowMoving({ products, transactions, now }).slice(0, 5), [products, transactions, now])
 
   const recentTxns = transactions.slice(0, 5)
   const txBadges = (tx) => ({
@@ -237,8 +245,15 @@ export default function Dashboard() {
   })
 
   // ── Cashier-only ──────────────────────────────────────────
-  const myTxns = useMemo(() => transactions.filter(tx => tx.cashierName === myName), [transactions, myName])
-  const myTodayTxns = useMemo(() => myTxns.filter(tx => { const d = new Date(tx.createdAt); d.setHours(0, 0, 0, 0); return d.getTime() === today.getTime() }), [myTxns, today])
+  // cashierId (set automatically on every new sale — see
+  // add_transaction_details.sql) is preferred when present; cashier_name
+  // was always just a free-text column, so old pre-migration rows still
+  // fall back to the name match.
+  const myTxns = useMemo(() => transactions.filter(tx => tx.cashierId ? tx.cashierId === user?.id : tx.cashierName === myName), [transactions, myName, user?.id])
+  // myTxns itself stays unfiltered (it backs the "My Recent Transactions"
+  // display list, which must still show a voided sale with its badge) —
+  // only the totals derived here exclude it.
+  const myTodayTxns = useMemo(() => myTxns.filter(tx => tx.status !== 'Voided' && isSameDay(tx.createdAt)), [myTxns, today])
   const myTodayAmount = myTodayTxns.reduce((s, tx) => s + tx.total, 0)
   const myItemsSoldToday = useMemo(() => myTodayTxns.reduce((s, tx) => s + (tx.items || []).reduce((a, i) => a + (isService(i.id) ? 0 : i.qty), 0), 0), [myTodayTxns, products])
   const myRequestsAll = useMemo(() => {
@@ -410,16 +425,17 @@ export default function Dashboard() {
                   {recentTxns.map(tx => {
                     const { refunded, returned } = txBadges(tx)
                     return (
-                      <tr key={tx.id}>
+                      <tr key={tx.id} onClick={() => setViewTxnId(tx.id)} style={{ cursor: 'pointer' }}>
                         <td style={{ color: 'var(--rpt-green)', fontWeight: 600 }}>#{String(tx.id).padStart(4, '0')}</td>
                         <td style={{ color: 'var(--rpt-muted)' }}>{new Date(tx.createdAt).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</td>
                         <td>{tx.customerName || 'Walk-in'}</td>
                         <td style={{ color: 'var(--rpt-body)' }}>{tx.cashierName || '—'}</td>
                         <td><span className="rpt-pill rpt-pill-gray"><span className="dot" style={{ background: paymentColor(tx.payment) }} />{paymentDisplay(tx.payment).label}</span></td>
                         <td className="num">
-                          <div style={{ fontWeight: 700, color: 'var(--rpt-title)' }}>{peso(tx.total)}</div>
-                          {(refunded || returned) && (
+                          <div style={{ fontWeight: 700, color: 'var(--rpt-title)', textDecoration: tx.status === 'Voided' ? 'line-through' : 'none' }}>{peso(tx.total)}</div>
+                          {(refunded || returned || tx.status === 'Voided') && (
                             <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 2 }}>
+                              {tx.status === 'Voided' && <span style={{ fontSize: 9.5, fontWeight: 700, padding: '1px 6px', borderRadius: 99, background: 'var(--rpt-red-light)', color: 'var(--rpt-red)' }}>VOIDED</span>}
                               {refunded && <span style={{ fontSize: 9.5, fontWeight: 700, padding: '1px 6px', borderRadius: 99, background: 'var(--rpt-red-light)', color: 'var(--rpt-red)' }}>Refunded</span>}
                               {returned && <span style={{ fontSize: 9.5, fontWeight: 700, padding: '1px 6px', borderRadius: 99, background: 'var(--rpt-green-light)', color: 'var(--rpt-green)' }}>Returned</span>}
                             </div>
@@ -471,13 +487,16 @@ export default function Dashboard() {
               {myTxns.length === 0 ? <div className="rpt-empty">{t('no_data')}</div> : (
                 <div className="rpt-simple-list">
                   {myTxns.slice(0, 5).map(tx => (
-                    <div key={tx.id} className="rpt-simple-row">
+                    <div key={tx.id} className="rpt-simple-row" onClick={() => setViewTxnId(tx.id)} style={{ cursor: 'pointer' }}>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--rpt-green)' }}>#{String(tx.id).padStart(4, '0')}</div>
                         <div style={{ fontSize: 11.5, color: 'var(--rpt-muted)' }}>{new Date(tx.createdAt).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })} · {tx.customerName || 'Walk-in'}</div>
-                        <span className="rpt-pill rpt-pill-gray" style={{ marginTop: 4 }}><span className="dot" style={{ background: paymentColor(tx.payment) }} />{paymentDisplay(tx.payment).label}</span>
+                        <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+                          <span className="rpt-pill rpt-pill-gray"><span className="dot" style={{ background: paymentColor(tx.payment) }} />{paymentDisplay(tx.payment).label}</span>
+                          {tx.status === 'Voided' && <span style={{ fontSize: 9.5, fontWeight: 700, padding: '1px 6px', borderRadius: 99, background: 'var(--rpt-red-light)', color: 'var(--rpt-red)' }}>VOIDED</span>}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--rpt-title)', flexShrink: 0 }}>{peso(tx.total)}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--rpt-title)', flexShrink: 0, textDecoration: tx.status === 'Voided' ? 'line-through' : 'none' }}>{peso(tx.total)}</div>
                     </div>
                   ))}
                 </div>
@@ -497,9 +516,11 @@ export default function Dashboard() {
         )}
 
         <MyRequestsModal open={viewAllRequests} onClose={() => setViewAllRequests(false)} requests={myRequestsAll} isLight={isLight} />
-        <MyTransactionsModal open={viewAllTxns} onClose={() => setViewAllTxns(false)} transactions={myTxns} />
+        <MyTransactionsModal open={viewAllTxns} onClose={() => setViewAllTxns(false)} transactions={myTxns} onOpenTxn={setViewTxnId} />
 
       </>}
+
+      <TransactionDetailsModal open={!!viewTxnId} onClose={() => setViewTxnId(null)} transactionId={viewTxnId} />
     </div>
   )
 }
