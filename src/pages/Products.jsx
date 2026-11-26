@@ -13,7 +13,8 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'', hasSerial:false, isService:false, isAvailable:true, lowStockLevel:'' }
+const EMPTY = { name:'', category:'', price:'', costPrice:'', stock:'', barcode:'', image:'', hasSerial:false, isService:false, isAvailable:true, lowStockLevel:'', rewardTier:'' }
+const REWARD_TIERS = [{value:'',label:'None'},{value:'silver',label:'Silver'},{value:'gold',label:'Gold'},{value:'platinum',label:'Platinum'}]
 
 // Shared by the "new category" form and each category's inline editor —
 // "Auto" (empty value) means fall back to categoryIcon()'s keyword guess.
@@ -74,7 +75,7 @@ export default function Products() {
   const catBadge = (name) => categories.find(c=>c.name===name)?.badgeColor || 'badge-accent'
 
   const openAdd   = () => { setForm({...EMPTY,category:categories[0]?.name||'',barcode:genBarcode()}); setModal('add') }
-  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||'',hasSerial:!!p.hasSerial,isService:!!p.isService,isAvailable:p.isAvailable!==false,lowStockLevel:p.lowStockLevel??''}); setSelected(p); setModal('edit') }
+  const openEdit  = p  => { setForm({name:p.name,category:p.category,price:p.price,costPrice:p.costPrice||'',stock:p.stock,barcode:p.barcode||'',image:p.image||'',hasSerial:!!p.hasSerial,isService:!!p.isService,isAvailable:p.isAvailable!==false,lowStockLevel:p.lowStockLevel??'',rewardTier:p.rewardTier||''}); setSelected(p); setModal('edit') }
   const openRestock = p => { setSelected(p); setRestockQty(''); setModal('restock') }
 
   const handleFileChange = async (e) => {
@@ -110,7 +111,7 @@ export default function Products() {
     if(form.lowStockLevel!=='' && (!Number.isInteger(Number(form.lowStockLevel))||Number(form.lowStockLevel)<0)) return toast('Low-stock alert level must be a whole number, 0 or higher','error')
     const priceNum = parseFloat(form.price), costNum = parseFloat(form.costPrice)
     const stockNum = form.isService ? 0 : form.hasSerial ? (modal==='edit' ? selected.stock : 0) : (parseInt(form.stock)||0)
-    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:form.isService?0:(costNum||0), stock:stockNum, barcode:form.barcode||genBarcode(), image:form.image, hasSerial:form.isService?false:form.hasSerial, isService:form.isService, isAvailable:form.isService?!!form.isAvailable:true, lowStockLevel:form.lowStockLevel===''?null:Number(form.lowStockLevel) }
+    const data = { name:form.name.trim(), category:form.category, price:priceNum, costPrice:form.isService?0:(costNum||0), stock:stockNum, barcode:form.barcode||genBarcode(), image:form.image, hasSerial:form.isService?false:form.hasSerial, isService:form.isService, isAvailable:form.isService?!!form.isAvailable:true, lowStockLevel:form.lowStockLevel===''?null:Number(form.lowStockLevel), rewardTier:form.isService?null:(form.rewardTier||null) }
     if(costNum>priceNum){
       const lossPct = (((costNum-priceNum)/priceNum)*100).toFixed(1)
       setLossConfirm({ data, lossPct })
@@ -357,9 +358,20 @@ export default function Products() {
                   </div>
                 )
               })()}
+              {!form.isService && (
+                <div style={{gridColumn:'span 2'}}>
+                  <label style={{fontSize:10,color:mutedText,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>Free reward for tier</label>
+                  <select className="select-field" style={{width:'100%'}} value={form.rewardTier} onChange={e=>setForm(f=>({...f,rewardTier:e.target.value}))}>
+                    {REWARD_TIERS.map(rt=><option key={rt.value} value={rt.value}>{rt.label}</option>)}
+                  </select>
+                  <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>
+                    Customers who reach this tier can claim this item for free, once.
+                  </div>
+                </div>
+              )}
               <div style={{gridColumn:'span 2'}}>
                 <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 12px',borderRadius:8,background:'var(--bg3)',border:'1px solid var(--border2)'}}>
-                  <input type="checkbox" checked={form.isService} onChange={e=>setForm(f=>({...f,isService:e.target.checked,hasSerial:e.target.checked?false:f.hasSerial}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
+                  <input type="checkbox" checked={form.isService} onChange={e=>setForm(f=>({...f,isService:e.target.checked,hasSerial:e.target.checked?false:f.hasSerial,rewardTier:e.target.checked?'':f.rewardTier}))} style={{width:15,height:15,accentColor:'var(--accent)',cursor:'pointer'}}/>
                   <span style={{display:'flex',alignItems:'center',gap:6,fontSize:12.5,fontWeight:600,color:'var(--text)'}}><Wrench size={13}/>This is a service (no stock)</span>
                 </label>
                 <div style={{fontSize:10.5,color:mutedText,marginTop:6,lineHeight:1.4}}>

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { X, Info, Star, ShoppingBag, Wallet, Receipt, ChevronDown, ChevronUp } from 'lucide-react'
-import { useTransactionStore, useProductStore, useRefundStore } from '../store'
+import { X, Info, Star, ShoppingBag, Wallet, Receipt, ChevronDown, ChevronUp, Lock, Gift } from 'lucide-react'
+import { useTransactionStore, useProductStore, useRefundStore, useRewardStore } from '../store'
 import { useT, peso, fmtDate, fmtDateTime, paymentDisplay } from '../utils/helpers'
-import { TIERS, getTier, getNextTier } from '../utils/loyalty'
+import { TIERS, getTier, getTierProgress } from '../utils/loyalty'
 import ProductThumb from './ProductThumb'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from './Pagination'
@@ -19,6 +19,7 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
   const txnLoading   = useTransactionStore(s => s.loading)
   const products     = useProductStore(s => s.products)
   const refunds      = useRefundStore(s => s.refunds)
+  const redemptions  = useRewardStore(s => s.redemptions)
 
   const [filterStatus, setFilterStatus] = useState('all')
   const [expanded, setExpanded] = useState({})
@@ -52,13 +53,20 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
   const firstPurchaseAt = custTxns.length ? custTxns[custTxns.length - 1].createdAt : customer.createdAt
 
   const points    = customer.points || 0
-  const tier      = getTier(points)
-  const nextTier  = getNextTier(points)
+  const { tier, nextTier, percent, progressInTier, tierRange, pointsToNext } = getTierProgress(points)
   const TierIcon  = tier.icon
-  const progressPct = nextTier
-    ? Math.min(100, Math.max(0, ((points - tier.min) / (nextTier.min - tier.min)) * 100))
-    : 100
   const tierIndex = TIERS.findIndex(x => x.key === tier.key)
+  // How far the Bronze→Silver→Gold→Platinum connector line should fill:
+  // every FULL segment the customer has already passed (tierIndex of them),
+  // plus `percent` of the one segment currently in progress — the exact
+  // same percent the bar above is drawn from, so the two always agree.
+  const segmentCount = TIERS.length - 1
+  const lineFraction = nextTier ? (tierIndex + percent / 100) / segmentCount : 1
+  const customerClaims = redemptions.filter(r => r.customerId === customer.id && r.tier)
+  // Bronze is the base tier everyone starts at — it has no reward list.
+  const rewardTiers = TIERS.filter(lt => lt.key !== 'bronze')
+  const rewardItemsFor = (tierKey) => products.filter(p => !p.isService && p.rewardTier === tierKey)
+  const nextTierItems = nextTier ? rewardItemsFor(nextTier.key) : []
 
   const initials = (customer.name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase()).join('') || '?'
   const contactLine = [customer.email, customer.phone].filter(Boolean).join(' · ')
@@ -144,20 +152,25 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
             </div>
 
             <div style={{ height: 8, borderRadius: 99, background: 'var(--bg4)', overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${progressPct}%`, borderRadius: 99, background: nextTier ? nextTier.color : tier.color, transition: 'width .4s ease' }} />
+              <div style={{ height: '100%', width: `${percent}%`, borderRadius: 99, background: nextTier ? nextTier.color : tier.color, transition: 'width .4s ease' }} />
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--text2)', marginTop: 8, fontVariantNumeric: 'tabular-nums' }}>
               {nextTier
-                ? <>{points.toLocaleString()} / {nextTier.min.toLocaleString()} pts — {(nextTier.min - points).toLocaleString()} {t('pts_to')} {nextTier.label}</>
-                : t('highest_tier')}
+                ? <>{progressInTier.toLocaleString()} / {tierRange.toLocaleString()} {t('pts_to')} {nextTier.label} · {points.toLocaleString()} total points</>
+                : <>{t('highest_tier')} · {points.toLocaleString()} total points</>}
             </div>
+            {nextTier && nextTierItems.length > 0 && (
+              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
+                Reach {nextTier.label} ({pointsToNext.toLocaleString()} pts more) to unlock a free item: {nextTierItems.map(p => p.name).join(' or ')}.
+              </div>
+            )}
 
             {/* Tier ladder */}
             <div className="select-none" style={{ marginTop: 20, position: 'relative', padding: '0 14px' }}>
               <div style={{ position: 'absolute', left: 28, right: 28, top: 14, height: 2, background: 'var(--border2)' }} />
               <div style={{
-                position: 'absolute', left: 28, top: 14, height: 2, background: tier.color,
-                width: tierIndex === 0 ? 0 : `calc((100% - 56px) * ${tierIndex / (TIERS.length - 1)})`,
+                position: 'absolute', left: 28, top: 14, height: 2, background: nextTier ? nextTier.color : tier.color,
+                width: `calc((100% - 56px) * ${lineFraction})`,
                 transition: 'width .4s ease',
               }} />
               <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 4 }}>
@@ -185,6 +198,42 @@ export default function CustomerHistoryModal({ open, onClose, customer }) {
                   )
                 })}
               </div>
+            </div>
+
+            {/* Per-tier reward status — Bronze has no reward list, so only
+                Silver/Gold/Platinum show here. */}
+            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {rewardTiers.map(lt => {
+                const reached = points >= lt.min
+                const claimedRow = customerClaims.find(r => r.tier === lt.key)
+                const itemsForTier = rewardItemsFor(lt.key)
+                const visibleItems = itemsForTier.slice(0, 3)
+                const extra = itemsForTier.length - visibleItems.length
+                const LtIcon = lt.icon
+                return (
+                  <div key={lt.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--bg3)', border: '1px solid var(--border2)' }}>
+                    <LtIcon size={14} style={{ color: lt.color, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: lt.color }}>{lt.label} Reward</div>
+                      <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {itemsForTier.length === 0 ? 'No items set' : visibleItems.map(p => p.name).join(', ') + (extra > 0 ? ` +${extra} more` : '')}
+                      </div>
+                      {/* Not a permanent "claimed" state — claiming costs
+                          points now, so the reward becomes available again
+                          once the customer earns back up to this tier. This
+                          is just a record of when it was last claimed. */}
+                      {claimedRow && (
+                        <div style={{ fontSize: 9, color: 'var(--text3)', marginTop: 2 }}>Last claimed: {fmtDate(claimedRow.createdAt)}</div>
+                      )}
+                    </div>
+                    {reached ? (
+                      <span style={{ fontSize: 9.5, fontWeight: 700, padding: '3px 8px', borderRadius: 99, background: lt.bg, color: lt.color, flexShrink: 0, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 3 }}><Gift size={10} />Available to claim ({lt.min.toLocaleString()} pts)</span>
+                    ) : (
+                      <span style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--text3)', flexShrink: 0, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Lock size={12} />Unlocks at {lt.label}</span>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
 

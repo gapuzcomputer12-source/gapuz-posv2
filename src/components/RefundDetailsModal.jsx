@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useReactToPrint } from 'react-to-print'
-import { FileText, Printer, Package, Banknote, Smartphone, Tag, AlertTriangle } from 'lucide-react'
-import { useAppStore, useTransactionStore, useProductStore, useCustomerStore, useCategoryStore, useActivityLogStore, useRefundStore } from '../store'
+import { FileText, Printer, Package, Banknote, Smartphone, Tag, AlertTriangle, Mail, Check } from 'lucide-react'
+import { useAppStore, useTransactionStore, useProductStore, useCustomerStore, useCategoryStore, useActivityLogStore, useRefundStore, sendDecisionEmail } from '../store'
 import ProductThumb from './ProductThumb'
 import RejectReasonModal from './RejectReasonModal'
 import Modal from './Modal'
@@ -50,6 +50,22 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   const { refunds } = useRefundStore()
   const [processing, setProcessing] = useState('')
   const [rejectOpen, setRejectOpen] = useState(false)
+  // Set once a decision made IN THIS SESSION actually succeeds — null
+  // otherwise, including for a request that's already Approved/Rejected
+  // from a previous session (that case is read off record.status instead,
+  // same as before). Drives the confirmation panel + email status so the
+  // admin sees "Customer notified at …" before the modal closes.
+  const [decision, setDecision] = useState(null) // { action: 'approved'|'rejected', emailStatus }
+  // Auto-closes the modal shortly after a decision is fully resolved —
+  // mirrors the same fix in ReturnDetailsModal.jsx. Cleared on
+  // unmount/record change so it never fires against an already-closed or
+  // reopened modal.
+  const closeTimerRef = useRef(null)
+  useEffect(() => {
+    setDecision(null)
+    if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); closeTimerRef.current = null }
+  }, [open, record?.id])
+  useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current) }, [])
   // Ref guard, not just `processing` state — two rapid clicks on Approve
   // can both pass a state check before React re-renders the disabled
   // button; the ref is checked and set synchronously so only the first
@@ -85,6 +101,24 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   const hasBreakdown = (record.subtotal || 0) > 0 || (record.vat || 0) > 0
   const MethodIcon = METHOD_ICON[method] || Tag
 
+  // Sends the customer-facing approved/rejected email AFTER the decision
+  // itself is already saved (never before — a failed email must never
+  // undo an approval/rejection) and keeps the modal open to show the
+  // result, instead of closing immediately like before this feature.
+  const sendDecision = async (action, rejectionReason) => {
+    setDecision({ action, rejectionReason, emailStatus: record.notifyEmail ? 'sending' : 'skipped' })
+    const result = await sendDecisionEmail({
+      type: 'refund', id: record.id, notifyEmail: record.notifyEmail, action,
+      customerName: record.customerName || 'Customer',
+      requestNo: idLabel, transactionNo: `#${String(txnId).padStart(4, '0')}`,
+      dateStr: fmtDateTime(new Date()), amount: record.total, method,
+      nextStep: 'Please visit the store to receive your refund.',
+      rejectionReason,
+    })
+    setDecision({ action, rejectionReason, emailStatus: result.status })
+    closeTimerRef.current = setTimeout(onClose, 1400)
+  }
+
   const handleApproveClick = async () => {
     if (submittingRef.current) return
     submittingRef.current = true
@@ -92,7 +126,7 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
     try {
       await onApprove(record)
       useActivityLogStore.getState().fetchLogs()
-      onClose()
+      await sendDecision('approved')
     } finally {
       submittingRef.current = false
       setProcessing('')
@@ -100,10 +134,12 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
   }
   // The actual reject call + validation live in RejectReasonModal; this
   // just forwards the reason and reports success/failure back to it so it
-  // knows whether to close itself or show the error and stay open.
+  // knows whether to close itself (RejectReasonModal only) or show the
+  // error and stay open. This modal itself stays open either way — it now
+  // only ever closes via the confirmation panel's Close button.
   const handleRejectConfirm = async (reason) => {
     const result = await onReject(record, reason)
-    if (!result?.error) { useActivityLogStore.getState().fetchLogs(); onClose() }
+    if (!result?.error) { useActivityLogStore.getState().fetchLogs(); await sendDecision('rejected', reason) }
     return result
   }
 
@@ -154,6 +190,7 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
             <MetaCard label="Refund Method">
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><MethodIcon size={12} />{method}</span>
               {txn?.payment && <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 500, marginTop: 2 }}>Originally paid via {txn.payment}</div>}
+              {txn?.payment?.includes('GCash') && <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 500, marginTop: 2 }}>GCash Ref. No.: {txn.gcashReference || '—'}</div>}
             </MetaCard>
             <MetaCard label="Requested By">{submittedLog?.actorName || record.processedBy || '—'}</MetaCard>
             <MetaCard label="Decision">
@@ -161,11 +198,57 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
                 ? <>{decisionLog.actorName} <span style={{ fontWeight: 500, color: 'var(--text3)' }}>· {fmtDate(decisionLog.createdAt)}</span></>
                 : <span style={{ color: 'var(--text3)', fontWeight: 500 }}>{record.status === 'Pending' ? 'Awaiting admin' : '—'}</span>}
             </MetaCard>
+            <MetaCard label="Notify Email">
+              <span style={{ fontFamily: record.notifyEmail ? "'JetBrains Mono',monospace" : 'inherit', fontSize: record.notifyEmail ? 11 : 12 }}>{record.notifyEmail || '—'}</span>
+            </MetaCard>
+            {record.gcashReference && (
+              <MetaCard label="GCash Ref. No. (refund)">
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{record.gcashReference}</span>
+              </MetaCard>
+            )}
           </div>
+
+          {/* Decision confirmation — only for a decision made IN THIS
+              session (see `decision` state). Shows whether the customer
+              was actually notified before the admin closes the modal. */}
+          {decision && (
+            <div style={{
+              background: decision.action === 'approved' ? (isLight ? '#d1fae5' : 'rgba(52,211,153,0.1)') : (isLight ? '#fee2e2' : 'rgba(239,68,68,0.08)'),
+              border: `1px solid ${decision.action === 'approved' ? (isLight ? '#a7f3d0' : 'rgba(52,211,153,0.3)') : (isLight ? '#fecaca' : 'rgba(239,68,68,0.25)')}`,
+              borderRadius: 10, padding: 12,
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <Check size={14} style={{ color: decision.action === 'approved' ? 'var(--green)' : 'var(--red)' }} />
+                Refund {decision.action}
+              </div>
+              {decision.rejectionReason && (
+                <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 6 }}>Reason: {decision.rejectionReason}</div>
+              )}
+              {decision.emailStatus === 'sending' && (
+                <div style={{ fontSize: 11.5, color: 'var(--text3)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-9-9" /></svg>
+                  Sending email…
+                </div>
+              )}
+              {decision.emailStatus === 'sent' && (
+                <div style={{ fontSize: 11.5, color: 'var(--green)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Mail size={13} />Customer notified at {record.notifyEmail}
+                </div>
+              )}
+              {decision.emailStatus === 'skipped' && (
+                <div style={{ fontSize: 11.5, color: 'var(--text3)' }}>No notify email on file — nothing sent.</div>
+              )}
+              {decision.emailStatus === 'failed' && (
+                <div style={{ fontSize: 11.5, color: 'var(--yellow)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <AlertTriangle size={13} />Decision saved, but the email could not be sent.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Rejection box — the whole point of this feature: a cashier (or
               an admin reviewing remotely) sees exactly why, right away. */}
-          {record.status === 'Rejected' && (
+          {!decision && record.status === 'Rejected' && (
             <div style={{ background: isLight ? '#fee2e2' : 'rgba(239,68,68,0.08)', border: `1px solid ${isLight ? '#fecaca' : 'rgba(239,68,68,0.25)'}`, borderRadius: 10, padding: 12 }}>
               <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', lineHeight: 1.5, marginBottom: 6 }}>Reason: {record.rejectionReason || '—'}</div>
               <div style={{ fontSize: 10.5, color: 'var(--text3)' }}>Rejected by {record.processedBy || '—'} on {fmtDateTime(record.processedAt || record.createdAt)}</div>
@@ -268,7 +351,9 @@ export default function RefundDetailsModal({ open, onClose, record, isAdmin, onA
           <button onClick={handlePrint} className="btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 'auto' }}>
             <Printer size={13} />Print
           </button>
-          {record.status === 'Pending' && isAdmin ? (
+          {decision ? (
+            <button onClick={onClose} className="btn-secondary">Close</button>
+          ) : record.status === 'Pending' && isAdmin ? (
             <>
               <button onClick={() => setRejectOpen(true)} disabled={!!processing} className="btn-danger" style={{ opacity: processing ? .6 : 1 }}>
                 Reject

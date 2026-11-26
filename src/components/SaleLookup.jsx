@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { differenceInCalendarDays, isToday, format } from 'date-fns'
-import { useTransactionStore, useRefundStore, useReturnStore, useProductStore, useAppStore } from '../store'
+import { useTransactionStore, useAppStore, fetchTransactionSettlement } from '../store'
 import { useToast } from '../utils/toast'
-import { useT, peso, SALE_ADJUSTMENT_DAYS, refundSettledAmount, totalSettledAmount } from '../utils/helpers'
+import { useT, peso, SALE_ADJUSTMENT_DAYS } from '../utils/helpers'
 import ScanInput from './ScanInput'
 
 const COPY = {
@@ -27,60 +27,25 @@ function fmtRecentDate(d) {
   return isToday(date) ? `Today, ${format(date, 'h:mm a')}` : format(date, 'MMM d, h:mm a')
 }
 
-// Whether this transaction's APPROVED refunds already cover its full
-// total. Refunds are money-only now (no item/qty breakdown — see the
-// refund audit), so "fully refunded" is a plain amount comparison instead
-// of a per-item quantity one.
-function isFullyRefunded(tx, refunds) {
-  return refundSettledAmount(tx.id, refunds) >= tx.total
-}
-
-// Whether every RETURNABLE item on this sale has already been returned via
-// an APPROVED return. Services are excluded here too — they never go
-// through Returns (see Refunds for the money-only path), so a sale made up
-// only of services has nothing left to return and counts as fully claimed.
-// Unrelated to refunds now — a refund no longer claims specific
-// items/products, so there is nothing to combine here; a Return is blocked
-// from double-claiming the same unit entirely server-side (see
-// create_return in add_returns_table.sql).
-function isFullyReturned(tx, returns, products) {
-  const returnableItems = (tx.items || []).filter(item => !products.find(p => p.id === item.id)?.isService)
-  if (returnableItems.length === 0) return true
-  return returnableItems.every(item => {
-    // returns.items is stored snake_case (item_id/product_id) — the raw
-    // object Returns.jsx hands to create_return, saved verbatim into the
-    // JSONB column.
-    const returnedQty = returns
-      .filter(r => r.transactionId === tx.id && r.status === 'Approved')
-      .reduce((sum, r) => sum + (r.items || []).filter(i => i.product_id === item.id).reduce((s, i) => s + (i.qty || 0), 0), 0)
-    return returnedQty >= item.qty
-  })
-}
-
-// Whether there's nothing left to do with this sale on the given page —
-// return mode: every item has already been returned. Refund mode: the
-// full transaction total has already been paid back via refunds AND/OR
-// money-back returns (create_refund's own cap, mirrored here) — a sale
-// fully settled by an approved "Cash refund" return, for instance, has
-// nothing left to refund either.
-function isFullyClaimed(tx, refunds, returns, mode, products) {
-  return mode === 'return' ? isFullyReturned(tx, returns, products) : totalSettledAmount(tx.id, refunds, returns) >= tx.total
-}
-
-// A sale already has a Pending request outranks a settled one (it's the
-// thing that needs attention). A partial refund still leaves the rest
-// refundable, so it's labeled "Partially Refunded" rather than claiming a
-// block that isn't actually there. Computed from the refunds list itself
-// (never tx.status) so a sale that was only ever *returned*, never
-// refunded, is never mislabeled "Partially Refunded" just because a
-// return also claims some of the same qty — "Returned" covers that case.
-function getStatusPill(tx, refunds, returns, fullyRefunded) {
-  const pendingRefund = refunds.some(r => r.transactionId === tx.id && r.status === 'Pending')
-  const pendingReturn = returns.some(r => r.transactionId === tx.id && r.status === 'Pending')
-  if (pendingRefund || pendingReturn) return { label: 'Pending', tone: 'warn' }
-  if (fullyRefunded) return { label: 'Refunded', tone: 'good' }
-  if (refunds.some(r => r.transactionId === tx.id && r.status === 'Approved')) return { label: 'Partially Refunded', tone: 'good' }
-  if (returns.some(r => r.transactionId === tx.id && r.status === 'Approved')) return { label: 'Returned', tone: 'good' }
+// Status pill for one row, read ENTIRELY off get_transaction_settlement —
+// no local re-derivation, so this can never drift from what actually gates
+// clickability (settlement.status) or from what the server itself enforces
+// inside create_return/create_refund. 'pending' always outranks 'settled'
+// (a pending request needs attention first); the wording for 'settled'/
+// 'partial' picks Return vs Refund phrasing off which side actually has an
+// approved claim, purely cosmetic (the underlying status is server-decided).
+function pillFor(settlement) {
+  if (!settlement) return null
+  if (settlement.status === 'pending') {
+    const prefix = settlement.pendingKind === 'return' ? 'RET' : 'REF'
+    return { label: `Pending ${prefix} #${String(settlement.pendingId).padStart(4, '0')}`, tone: 'warn' }
+  }
+  if (settlement.status === 'settled') {
+    return { label: settlement.approvedReturned >= settlement.amountPaid ? 'Fully Returned' : 'Fully Refunded', tone: 'good' }
+  }
+  if (settlement.status === 'partial') {
+    return { label: settlement.approvedReturned > 0 ? 'Partially Returned' : 'Partially Refunded', tone: 'good' }
+  }
   return null
 }
 
@@ -97,12 +62,14 @@ export default function SaleLookup({ mode, onSaleFound }) {
   const isLight = theme === 'light'
   const transactions = useTransactionStore(s => s.transactions)
   const txLoading = useTransactionStore(s => s.loading)
-  const refunds = useRefundStore(s => s.refunds)
-  const returns = useReturnStore(s => s.returns)
-  const products = useProductStore(s => s.products)
 
   const [query, setQuery] = useState('')
   const [looking, setLooking] = useState(false)
+  // Settlement (badge + clickable-state source of truth) for each row
+  // currently shown — fetched fresh whenever the visible set of recent
+  // transactions changes, since it can go stale the moment a return/
+  // refund gets approved elsewhere.
+  const [settlements, setSettlements] = useState({})
 
   const runLookup = async (raw) => {
     setLooking(true)
@@ -121,6 +88,17 @@ export default function SaleLookup({ mode, onSaleFound }) {
   }
 
   const recent = transactions.slice(0, 5)
+  const recentIds = recent.map(tx => tx.id).join(',')
+
+  useEffect(() => {
+    if (recent.length === 0) return
+    let cancelled = false
+    Promise.all(recent.map(tx => fetchTransactionSettlement(tx.id).then(s => [tx.id, s]))).then(pairs => {
+      if (cancelled) return
+      setSettlements(Object.fromEntries(pairs))
+    })
+    return () => { cancelled = true }
+  }, [recentIds])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -151,16 +129,18 @@ export default function SaleLookup({ mode, onSaleFound }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {recent.map(tx => {
-              const fullyRefunded = isFullyRefunded(tx, refunds)
-              const fullyClaimed = isFullyClaimed(tx, refunds, returns, mode, products)
-              const statusPill = getStatusPill(tx, refunds, returns, fullyRefunded)
+              const settlement = settlements[tx.id]
+              const settled = settlement?.status === 'settled'
+              const pending = settlement?.status === 'pending'
+              const statusPill = pillFor(settlement)
               const daysSince = differenceInCalendarDays(new Date(), new Date(tx.createdAt))
               const daysLeft = SALE_ADJUSTMENT_DAYS - daysSince
               const timeExpired = daysLeft < 0
-              // Both refunds and returns now share the same 7-day window
-              // (create_refund/create_return enforce it server-side), and a
-              // sale with nothing left to do on this page (fully refunded,
-              // or fully returned) isn't clickable either way.
+              // Settlement not loaded yet (brief window right after the
+              // recent list changes) is treated as not-yet-clickable too,
+              // rather than flashing a row clickable that turns out to be
+              // settled/pending a moment later.
+              const fullyClaimed = !settlement || settled || pending
               const expired = timeExpired || fullyClaimed
               const items = tx.items || []
               return (

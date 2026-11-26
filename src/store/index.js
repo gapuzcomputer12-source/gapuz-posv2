@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { supabase } from '../lib/supabaseClient'
 import { getEffectiveLowStockLevel } from '../utils/helpers'
+import { TIERS, getTier } from '../utils/loyalty'
 
 // Password-reset emails must always point at the stable production URL, not
 // window.location.origin — if "Forgot password" is ever clicked from a
@@ -168,6 +169,57 @@ function notifyRequestAlert(type, id) {
     .then(({ error }) => { if (error) console.error('request alert failed:', error.message) })
 }
 
+// Fire-and-forget: emails the customer the moment a sale's earned points
+// push them UP across the Silver/Gold/Platinum line — never on the way
+// down (refunds use revertPurchase, tier claims use claimTierReward,
+// neither calls this), and only for the one purchase that actually
+// crosses the threshold, never again on a later purchase that's already
+// past it. Skips silently if the customer has no email on file, same as
+// the reward-claim email does. Also drops a 'customer'/'upgraded'
+// activity log entry so staff can see it happened.
+function notifyTierUpgrade(customer, newTier) {
+  logActivity('upgraded', 'customer', customer.name, { tierReached: newTier.label, points: customer.points })
+  if (!customer.email) return
+  const rewardItems = useProductStore.getState().products
+    .filter(p => !p.isService && p.rewardTier === newTier.key && p.stock > 0)
+    .map(p => p.name)
+  supabase.functions.invoke('send-tier-upgrade-email', {
+    body: { email: customer.email, customerName: customer.name, tierLabel: newTier.label, points: customer.points, rewardItems },
+  }).then(({ error }) => { if (error) console.error('tier upgrade email failed:', error.message) })
+}
+
+// Emails the customer when their Return/Refund request is approved or
+// rejected — called from RefundDetailsModal.jsx / ReturnDetailsModal.jsx
+// right after the decision itself is saved, never before (a failed email
+// must never undo an approval/rejection). Unlike the fire-and-forget
+// helpers above, this one is AWAITED by its caller so the UI can show
+// "Customer notified at …" / "could not be sent" once it resolves.
+//
+// Writes its own 'email' activity_log entry rather than editing the
+// 'approved'/'rejected' entry already written by approveReturn/rejectReturn
+// /updateRefund/rejectRefund — activity_log has no UPDATE policy anywhere
+// in this schema on purpose (append-only audit trail), same reasoning as
+// the reward-claim email's separate log entry.
+export async function sendDecisionEmail({ type, id, notifyEmail, action, ...details }) {
+  const label = `#${String(id).padStart(4, '0')}`
+  if (!notifyEmail) {
+    logActivity('email', type, label, { emailStatus: 'skipped', decisionAction: action })
+    return { status: 'skipped' }
+  }
+  try {
+    const { error } = await supabase.functions.invoke('send-request-decision-email', {
+      body: { email: notifyEmail, type, action, ...details },
+    })
+    if (error) throw error
+    logActivity('email', type, label, { emailStatus: 'sent', email: notifyEmail, decisionAction: action })
+    return { status: 'sent' }
+  } catch (err) {
+    console.error('decision email failed:', err.message)
+    logActivity('email', type, label, { emailStatus: 'failed', email: notifyEmail, decisionAction: action })
+    return { status: 'failed' }
+  }
+}
+
 export const useActivityLogStore = create((set) => ({
   logs: [],
   loading: false,
@@ -274,7 +326,7 @@ export const useAppStore = create(
 )
 
 // ── PRODUCT STORE ────────────────────────────────────────────────
-const PRODUCT_SELECT = 'id:product_id, name, category, price, costPrice:cost_price, stock, barcode, icon, image, sold, hasSerial:has_serial, isService:is_service, isAvailable:is_available, lowStockLevel:low_stock_level, createdAt:created_at, lastSoldAt:last_sold_at'
+const PRODUCT_SELECT = 'id:product_id, name, category, price, costPrice:cost_price, stock, barcode, icon, image, sold, hasSerial:has_serial, isService:is_service, isAvailable:is_available, lowStockLevel:low_stock_level, rewardTier:reward_tier, createdAt:created_at, lastSoldAt:last_sold_at'
 
 export const useProductStore = create((set, get) => ({
   products: [],
@@ -288,7 +340,7 @@ export const useProductStore = create((set, get) => ({
   },
 
   addProduct: async (data) => {
-    const row = { name: data.name, category: data.category, price: data.price, cost_price: data.costPrice, stock: data.stock, barcode: data.barcode, icon: data.icon, image: data.image, has_serial: !!data.hasSerial, is_service: !!data.isService, is_available: data.isAvailable !== false, low_stock_level: data.lowStockLevel ?? null }
+    const row = { name: data.name, category: data.category, price: data.price, cost_price: data.costPrice, stock: data.stock, barcode: data.barcode, icon: data.icon, image: data.image, has_serial: !!data.hasSerial, is_service: !!data.isService, is_available: data.isAvailable !== false, low_stock_level: data.lowStockLevel ?? null, reward_tier: data.isService ? null : (data.rewardTier || null) }
     const { data: inserted, error } = await supabase.from('products').insert(row).select(PRODUCT_SELECT).single()
     if (error || !inserted) return null
     set(s => ({ products: [...s.products, inserted] }))
@@ -310,6 +362,7 @@ export const useProductStore = create((set, get) => ({
     if ('isService' in data) row.is_service = !!data.isService
     if ('isAvailable' in data) row.is_available = !!data.isAvailable
     if ('lowStockLevel' in data) row.low_stock_level = data.lowStockLevel ?? null
+    if ('rewardTier' in data) row.reward_tier = data.isService ? null : (data.rewardTier || null)
     const prev = get().products.find(p => p.id === id)
     const { error } = await supabase.from('products').update(row).eq('product_id', id)
     if (!error) {
@@ -565,7 +618,13 @@ export const useCustomerStore = create((set, get) => ({
     const purchases = c.purchases + 1
     const totalSpent = c.totalSpent + total
     const { error } = await supabase.from('customers').update({ points, purchases, total_spent: totalSpent }).eq('customer_id', id)
-    if (!error) set(s => ({ customers: s.customers.map(cc => cc.id === id ? { ...cc, points, purchases, totalSpent } : cc) }))
+    if (!error) {
+      set(s => ({ customers: s.customers.map(cc => cc.id === id ? { ...cc, points, purchases, totalSpent } : cc) }))
+      const oldRank = TIERS.findIndex(t => t.key === getTier(c.points).key)
+      const newTier = getTier(points)
+      const newRank = TIERS.findIndex(t => t.key === newTier.key)
+      if (newRank > oldRank) notifyTierUpgrade({ ...c, points }, newTier)
+    }
   },
 
   // Reverses stats credited by addPoints when a sale is refunded
@@ -581,8 +640,74 @@ export const useCustomerStore = create((set, get) => ({
   },
 }))
 
+// ── REWARD STORE (tier rewards — one free item per tier reached) ──
+// Not a discount, and never touches transactions/transaction_items — see
+// the migration-level comment at the top of add_reward_redemptions.sql /
+// add_tier_rewards.sql for why that keeps a claim out of every sales-based
+// report. tier is null on every pre-tier-rewards row (the old points-
+// exchange system had no tier concept) — callers show "—" for those.
+const REDEMPTION_SELECT = 'id, redemptionNo:redemption_no, customerId:customer_id, productId:product_id, serialId:serial_id, quantity, pointsUsed:points_used, tier, redeemedByName:redeemed_by_name, createdAt:created_at, customer:customers(name), product:products(name), serial:product_serials(serialNumber:serial_number)'
+
+export const useRewardStore = create((set, get) => ({
+  redemptions: [],
+  loading: false,
+
+  fetchRedemptions: async () => {
+    set({ loading: true })
+    const { data, error } = await supabase.from('reward_redemptions').select(REDEMPTION_SELECT).order('created_at', { ascending: false })
+    if (!error) {
+      set({
+        redemptions: (data || []).map(r => ({ ...r, customerName: r.customer?.name, productName: r.product?.name, serialNumber: r.serial?.serialNumber })),
+        loading: false,
+      })
+    } else set({ loading: false })
+  },
+
+  // Atomic on the server (claim_tier_reward) — locks the product then the
+  // customer row before validating anything, same shape deduct_stock
+  // follows locking a product row at checkout. Deducts the tier's point
+  // cost (never below 0) — a customer can claim the same tier's reward
+  // again once they've earned back enough points, there's no longer a
+  // once-ever restriction. Returns { error } with a message ready to show
+  // the staff as-is ("Not enough points", "Reach Gold to unlock this
+  // reward", "Out of stock") on any failed check; nothing is changed in
+  // that case.
+  claimTierReward: async ({ customerId, productId, serialId }) => {
+    const { data, error } = await supabase.rpc('claim_tier_reward', {
+      p_customer_id: customerId,
+      p_product_id: productId,
+      p_serial_id: serialId || null,
+    })
+    if (error) return { error }
+    const row = Array.isArray(data) ? data[0] : data
+    if (!row) return { error: { message: 'Claim failed' } }
+
+    // Mirror the customer's new points balance locally (the RPC already
+    // computed and floored it at 0) so the UI updates without a refetch —
+    // same pattern as addPoints/revertPurchase above.
+    useCustomerStore.setState(s => ({ customers: s.customers.map(c => c.id === customerId ? { ...c, points: row.out_customer_points } : c) }))
+    const product = useProductStore.getState().products.find(p => p.id === productId)
+    useProductStore.setState(s => ({ products: s.products.map(p => p.id === productId ? { ...p, stock: row.out_stock } : p) }))
+    // Same "only on a genuine crossing" rule deductStock follows after a sale.
+    if (product && row.out_zeroed) notifyLowStock({ name: product.name, category: product.category, barcode: product.barcode, stock: row.out_stock, lowStockLevel: row.out_level }, 'out')
+    else if (product && row.out_low) notifyLowStock({ name: product.name, category: product.category, barcode: product.barcode, stock: row.out_stock, lowStockLevel: row.out_level }, 'low')
+
+    await get().fetchRedemptions()
+    // Normalized to camelCase here (the RPC itself returns raw column
+    // names, unlike a .select() call, which never gets to alias them).
+    return {
+      error: null,
+      redemption: {
+        id: row.id, redemptionNo: row.redemption_no, customerId: row.customer_id, productId: row.product_id,
+        serialId: row.serial_id, tier: row.tier, pointsUsed: row.points_used, redeemedByName: row.redeemed_by_name,
+        createdAt: row.created_at, customerPoints: row.out_customer_points,
+      },
+    }
+  },
+}))
+
 // ── TRANSACTION STORE ────────────────────────────────────────────
-const TXN_SELECT = 'id:transaction_id, customerId:customer_id, customerName:customer_name, payment, subtotal, discAmt:disc_amt, vat, total, cashGiven:cash_given, status, cashierName:cashier_name, createdAt:created_at'
+const TXN_SELECT = 'id:transaction_id, customerId:customer_id, customerName:customer_name, payment, subtotal, discAmt:disc_amt, vat, total, cashGiven:cash_given, status, cashierName:cashier_name, gcashReference:gcash_reference, createdAt:created_at'
 
 export const useTransactionStore = create((set, get) => ({
   transactions: [],
@@ -598,6 +723,11 @@ export const useTransactionStore = create((set, get) => ({
     else set({ loading: false })
   },
 
+  // Returns the full transaction on success, null on a generic failure, or
+  // { duplicateGcashRef: true } when the insert was rejected by the
+  // idx_transactions_gcash_reference unique index (Postgres 23505) — the
+  // only way a raw insert can fail for a reason the cashier needs to see a
+  // specific message for, rather than the generic "Checkout failed" toast.
   addTransaction: async (txn) => {
     const row = {
       customer_id: txn.customerId || null,
@@ -613,13 +743,20 @@ export const useTransactionStore = create((set, get) => ({
       cash_given: txn.cashGiven,
       status: txn.status,
       cashier_name: txn.cashierName,
+      gcash_reference: txn.gcashReference || null,
     }
     const { data: inserted, error } = await supabase.from('transactions').insert(row).select(TXN_SELECT).single()
-    if (error || !inserted) return null
+    if (error || !inserted) {
+      if (error?.code === '23505') return { duplicateGcashRef: true }
+      return null
+    }
     const itemRows = txn.items.map(i => ({ transaction_id: inserted.id, product_id: i.id, name: i.name, qty: i.qty, price: i.price, cost_price: i.costPrice || 0, notes: i.notes || null }))
     await supabase.from('transaction_items').insert(itemRows)
     const full = { ...inserted, items: txn.items }
     set(s => ({ transactions: [full, ...s.transactions] }))
+    logActivity('completed', 'sale', `#${String(full.id).padStart(4, '0')}`, {
+      total: full.total, payment: full.payment, gcashReference: full.gcashReference || undefined,
+    })
     return full
   },
 
@@ -632,7 +769,7 @@ export const useTransactionStore = create((set, get) => ({
 }))
 
 // ── REFUND STORE ─────────────────────────────────────────────────
-const REFUND_SELECT = 'id:refund_id, transactionId:transaction_id, customerName:customer_name, reason, refundMethod:refund_method, notes, total, status, processedBy:processed_by, submittedBy:submitted_by, rejectionReason:rejection_reason, items, subtotal, vat, createdAt:created_at, processedAt:processed_at'
+const REFUND_SELECT = 'id:refund_id, transactionId:transaction_id, customerName:customer_name, reason, refundMethod:refund_method, notes, total, status, processedBy:processed_by, submittedBy:submitted_by, rejectionReason:rejection_reason, items, subtotal, vat, notifyEmail:notify_email, gcashReference:gcash_reference, createdAt:created_at, processedAt:processed_at'
 
 export const useRefundStore = create((set, get) => ({
   refunds: [],
@@ -662,6 +799,8 @@ export const useRefundStore = create((set, get) => ({
       p_method: data.refundMethod,
       p_notes: data.notes || null,
       p_client_request_id: data.clientRequestId || null,
+      p_notify_email: data.notifyEmail || null,
+      p_gcash_reference: data.gcashReference || null,
     })
     if (error) return { error }
     const row = rows?.[0]
@@ -723,6 +862,13 @@ export async function resolveLookupId(query) {
   if (!trimmed) return null
   const { data: serialRow } = await supabase.from('product_serials').select('transaction_id').eq('serial_number', trimmed).maybeSingle()
   if (serialRow?.transaction_id) return serialRow.transaction_id
+  // A GCash reference is always exactly 13 digits — checked before the
+  // bare-integer fallback below so it can't be misread as a (much shorter)
+  // transaction id.
+  if (/^\d{13}$/.test(trimmed)) {
+    const { data: refRow } = await supabase.from('transactions').select('transaction_id').eq('gcash_reference', trimmed).maybeSingle()
+    if (refRow?.transaction_id) return refRow.transaction_id
+  }
   if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10)
   return null
 }
@@ -745,12 +891,18 @@ export async function findSaleForReturn(query) {
   // serial matches it.
   const { data: serialRow } = await supabase.from('product_serials').select('transaction_id').eq('serial_number', trimmed).maybeSingle()
   let txnId = serialRow?.transaction_id || null
+  // Same 13-digit GCash reference check as resolveLookupId above, for the
+  // same reason — must be tried before the bare-integer fallback.
+  if (!txnId && /^\d{13}$/.test(trimmed)) {
+    const { data: refRow } = await supabase.from('transactions').select('transaction_id').eq('gcash_reference', trimmed).maybeSingle()
+    txnId = refRow?.transaction_id || null
+  }
   if (!txnId && /^\d+$/.test(trimmed)) txnId = parseInt(trimmed, 10)
   if (!txnId) return null
 
   const { data: txn, error: txnErr } = await supabase
     .from('transactions')
-    .select('id:transaction_id, customerId:customer_id, customerName:customer_name, total, createdAt:created_at')
+    .select('id:transaction_id, customerId:customer_id, customerName:customer_name, subtotal, vat, total, status, payment, cashierName:cashier_name, gcashReference:gcash_reference, createdAt:created_at')
     .eq('transaction_id', txnId)
     .maybeSingle()
   if (txnErr || !txn) return null
@@ -777,9 +929,56 @@ export async function findSaleForReturn(query) {
   }
 }
 
+// Single source of truth for "how much of this transaction is still
+// available to return/refund" — one call to the get_transaction_settlement
+// RPC (see add_transaction_settlement.sql), reused by SaleLookup.jsx's
+// Recent Transactions badges/clickable-state, Returns.jsx/Refunds.jsx's
+// handleLookup gating, and TransactionSummaryCard's Details-step numbers.
+// The same function also runs server-side inside create_return/
+// create_refund, so the server rejects exactly what the UI already hides —
+// keyed only on transaction_id, so walk-in sales (no customer_id) work
+// identically to registered ones. Returns null (never throws) on any
+// error, since every caller already has a sensible "couldn't determine
+// this, treat as unavailable" fallback.
+export async function fetchTransactionSettlement(txnId) {
+  const { data, error } = await supabase.rpc('get_transaction_settlement', { p_transaction_id: txnId })
+  if (error || !data?.[0]) return null
+  const row = data[0]
+  return {
+    transactionId: row.transaction_id,
+    amountPaid: row.amount_paid,
+    approvedReturned: row.approved_returned,
+    pendingReturned: row.pending_returned,
+    approvedRefunded: row.approved_refunded,
+    pendingRefunded: row.pending_refunded,
+    remainingRefundable: row.remaining_refundable,
+    status: row.status, // 'available' | 'partial' | 'pending' | 'settled'
+    pendingKind: row.pending_kind, // 'return' | 'refund' | null
+    pendingId: row.pending_id,
+    serialStatuses: row.serial_statuses || [], // [{itemId,productId,serial,status:'returned'|'pending'}]
+    itemQtyClaimed: row.item_qty_claimed || [], // [{itemId,productId,returnedQty,pendingQty}]
+  }
+}
+
+// Refunds' Details-step summary card shows serials per item too, but
+// useTransactionStore's own items join (TXN_SELECT) only carries
+// product_id, not the transaction_items.id that product_serials actually
+// keys on — this is a small dedicated lookup, grouped by product_id, so
+// that card can decorate each already-fetched item without a second round
+// trip per row. Display-only (unlike findSaleForReturn's serials, this
+// never gates a selection), so grouping by product_id instead of the exact
+// item_id is an acceptable simplification.
+export async function fetchSaleSerialsByProduct(txnId) {
+  const { data } = await supabase
+    .from('product_serials')
+    .select('serialNumber:serial_number, status, transactionItem:transaction_items(productId:product_id)')
+    .eq('transaction_id', txnId)
+  return (data || []).map(s => ({ serialNumber: s.serialNumber, status: s.status, productId: s.transactionItem?.productId }))
+}
+
 // ── RETURN STORE (returned items — physically come back; see Refunds for
 // the money-only flow) ────────────────────────────────────────────
-const RETURN_SELECT = 'id:return_id, transactionId:transaction_id, customerName:customer_name, reason, method, notes, subtotal, vat, total, status, processedBy:processed_by, submittedBy:submitted_by, rejectionReason:rejection_reason, items, conditions, evidencePhotos:evidence_photos, createdAt:created_at, processedAt:processed_at'
+const RETURN_SELECT = 'id:return_id, transactionId:transaction_id, customerName:customer_name, reason, method, notes, subtotal, vat, total, status, processedBy:processed_by, submittedBy:submitted_by, rejectionReason:rejection_reason, items, conditions, evidencePhotos:evidence_photos, notifyEmail:notify_email, createdAt:created_at, processedAt:processed_at'
 
 const EVIDENCE_BUCKET = 'return-evidence'
 
@@ -842,6 +1041,7 @@ export const useReturnStore = create((set, get) => ({
       p_total: data.total,
       p_evidence_photos: data.evidencePhotos || [],
       p_client_request_id: data.clientRequestId || null,
+      p_notify_email: data.notifyEmail || null,
     })
     if (error) return { error }
     const row = rows?.[0]
@@ -886,8 +1086,62 @@ export const useReturnStore = create((set, get) => ({
   },
 }))
 
+// ── STORE SETTINGS (GCash QR + account name) ──────────────────────
+// Single row (id=1), pre-seeded by the migration — see add_gcash_settings.sql.
+// gcashQrPath is a storage object path, never a public URL (the bucket is
+// private, same reasoning as return-evidence); gcashQrSignedUrl is derived
+// from it on fetch and just held in memory, never persisted.
+const STORE_ASSETS_BUCKET = 'store-assets'
+
+export const useSettingsStore = create((set, get) => ({
+  gcashQrPath: null,
+  gcashQrSignedUrl: null,
+  gcashAccountName: '',
+  loaded: false,
+
+  fetchSettings: async () => {
+    const { data, error } = await supabase.from('store_settings').select('gcashQrPath:gcash_qr_path, gcashAccountName:gcash_account_name').eq('id', 1).maybeSingle()
+    if (error || !data) { set({ loaded: true }); return }
+    let signedUrl = null
+    if (data.gcashQrPath) {
+      const { data: signed } = await supabase.storage.from(STORE_ASSETS_BUCKET).createSignedUrl(data.gcashQrPath, 60 * 60 * 24)
+      signedUrl = signed?.signedUrl || null
+    }
+    set({ gcashQrPath: data.gcashQrPath, gcashQrSignedUrl: signedUrl, gcashAccountName: data.gcashAccountName || '', loaded: true })
+  },
+
+  // Uploads the new QR to a fresh timestamped path (so a stale signed URL
+  // some cashier still has cached keeps working until they refresh), then
+  // points store_settings at it and deletes the old file.
+  uploadGcashQr: async (file) => {
+    const prevPath = get().gcashQrPath
+    const ext = (file.name.split('.').pop() || 'png').toLowerCase()
+    const path = `gcash-qr-${Date.now()}.${ext}`
+    const { error: uploadErr } = await supabase.storage.from(STORE_ASSETS_BUCKET).upload(path, file, { contentType: file.type })
+    if (uploadErr) return { error: uploadErr }
+    const { error: updateErr } = await supabase.from('store_settings').update({ gcash_qr_path: path, updated_at: new Date().toISOString() }).eq('id', 1)
+    if (updateErr) { await supabase.storage.from(STORE_ASSETS_BUCKET).remove([path]); return { error: updateErr } }
+    if (prevPath) await supabase.storage.from(STORE_ASSETS_BUCKET).remove([prevPath])
+    await get().fetchSettings()
+    logActivity('updated', 'settings', 'GCash QR')
+    return { error: null }
+  },
+
+  updateGcashAccountName: async (name) => {
+    const { error } = await supabase.from('store_settings').update({ gcash_account_name: name.trim() || null, updated_at: new Date().toISOString() }).eq('id', 1)
+    if (error) return { error }
+    set({ gcashAccountName: name.trim() })
+    logActivity('updated', 'settings', 'GCash Account Name')
+    return { error: null }
+  },
+}))
+
 // ── HOLD STORE ───────────────────────────────────────────────────
-const HOLD_SELECT = 'id:hold_id, label, items, customerId:customer_id, savedAt:saved_at'
+// customerChosen distinguishes "Walk-in Customer was explicitly chosen"
+// (customerId null, customerChosen true) from "no customer was chosen at
+// all" (customerId null, customerChosen false) — customer_id alone can't
+// tell those apart, since Walk-in has no real row to reference either way.
+const HOLD_SELECT = 'id:hold_id, label, items, customerId:customer_id, customerChosen:customer_chosen, savedAt:saved_at'
 
 export const useHoldStore = create((set, get) => ({
   holds: [],
@@ -897,8 +1151,8 @@ export const useHoldStore = create((set, get) => ({
     if (!error) set({ holds: data })
   },
 
-  saveHold: async (label, items, customerId) => {
-    const row = { label, items, customer_id: customerId }
+  saveHold: async (label, items, customerId, customerChosen) => {
+    const row = { label, items, customer_id: customerId, customer_chosen: !!customerChosen }
     const { data: inserted, error } = await supabase.from('holds').insert(row).select(HOLD_SELECT).single()
     if (!error) set(s => ({ holds: [...s.holds, inserted] }))
   },
@@ -913,7 +1167,11 @@ export const useHoldStore = create((set, get) => ({
 export const useCartStore = create((set, get) => ({
   items: [],
   payMethod: 'Cash',
+  // customerId: null means "Walk-in" OR "nothing chosen yet" — customerChosen
+  // is what actually distinguishes the two, so the cashier is forced to make
+  // an explicit choice (Walk-in counts as a choice) before checkout.
   customerId: null,
+  customerChosen: false,
   splitMode: false,
   split1Pay: 'Cash',
   split2Pay: 'GCash',
@@ -968,9 +1226,15 @@ export const useCartStore = create((set, get) => ({
       return { items: s.items.map(i => i.id===id ? {...i, qty:serials.length, serials} : i) }
     })
   },
-  clearCart: () => set({ items:[], customerId:null, splitMode:false, split1Amt:'' }),
+  clearCart: () => set({ items:[], customerId:null, customerChosen:false, splitMode:false, split1Amt:'' }),
   setPayMethod: (m) => set({ payMethod:m }),
-  setCustomer: (id) => set({ customerId:id }),
+  // id is null for an explicit "Walk-in Customer" pick, or a real customer
+  // id — either way this counts as having made a choice.
+  setCustomer: (id) => set({ customerId:id, customerChosen:true }),
+  // Used when restoring a hold that was saved with no customer chosen at
+  // all, so the picker goes back to its empty placeholder state rather
+  // than inheriting whatever was selected before the restore.
+  unsetCustomer: () => set({ customerId:null, customerChosen:false }),
   setSplitMode: (v) => set({ splitMode:v }),
   setSplit1Pay: (v) => set({ split1Pay:v }),
   setSplit2Pay: (v) => set({ split2Pay:v }),

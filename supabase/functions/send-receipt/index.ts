@@ -59,6 +59,7 @@ function receiptHtml(txn: any) {
         <span style="color:#065f46">TOTAL</span><span style="color:#059669">${peso(txn.total)}</span>
       </div>
       <div style="margin-top:10px;font-size:11.5px;color:#555;text-align:center">Payment: <strong style="color:#111">${txn.payment}</strong></div>
+      ${(txn.payment || '').includes('GCash') ? `<div style="margin-top:4px;font-size:11.5px;color:#555;text-align:center">GCash Ref. No.: <strong style="color:#111">${txn.gcashReference || '—'}</strong></div>` : ''}
     </div>
 
     <div style="text-align:center;font-size:10.5px;color:#999;border-top:1px dashed #ccc;padding:14px 20px;background:#fafafa">

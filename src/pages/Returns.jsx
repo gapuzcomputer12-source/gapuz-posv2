@@ -2,11 +2,12 @@ import { useState, useMemo, useEffect, useRef, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { differenceInCalendarDays } from 'date-fns'
 import { RefreshCw, ClipboardList, Clock, CheckCircle2, Eye, Package, AlertTriangle, CheckCircle, Barcode, Check, Info } from 'lucide-react'
-import { useReturnStore, useAuthStore, useProductStore, useAppStore, findSaleForReturn } from '../store'
+import { useReturnStore, useRefundStore, useAuthStore, useProductStore, useCustomerStore, useAppStore, findSaleForReturn, fetchTransactionSettlement } from '../store'
 import { useToast } from '../utils/toast'
-import { useT, peso, fmtDate, RETURN_REASONS, SALE_ADJUSTMENT_DAYS } from '../utils/helpers'
+import { useT, peso, fmtDate, isValidEmail, RETURN_REASONS, SALE_ADJUSTMENT_DAYS } from '../utils/helpers'
 import { StatusBadge } from '../components/RefundDetailsModal'
 import ReturnDetailsModal from '../components/ReturnDetailsModal'
+import TransactionSummaryCard from '../components/TransactionSummaryCard'
 import ScanInput from '../components/ScanInput'
 import PolicyModal from '../components/PolicyModal'
 import SaleLookup from '../components/SaleLookup'
@@ -15,7 +16,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 
-const RETURN_METHODS = ['Cash refund', 'GCash refund', 'Replacement']
+const RETURN_METHODS = ['Replacement', 'Cash refund', 'GCash refund']
 
 const STEPS = [
   { num: 1, label: 'Find sale' },
@@ -33,7 +34,10 @@ export default function Returns() {
   const { role, user } = useAuthStore()
   const { theme } = useAppStore()
   const { returns, loading, submitReturn, approveReturn, rejectReturn } = useReturnStore()
+  const { refunds } = useRefundStore()
   const fetchProducts = useProductStore(s => s.fetchProducts)
+  const products = useProductStore(s => s.products)
+  const customers = useCustomerStore(s => s.customers)
   const [searchParams] = useSearchParams()
 
   const isAdmin = role === 'admin'
@@ -48,6 +52,11 @@ export default function Returns() {
   const [filterStatus, setFilterStatus] = useState(() => searchParams.get('status') || 'All')
   const [viewReturn, setViewReturn] = useState(null)
   const [details, setDetails] = useState({ reason: RETURN_REASONS[0], method: RETURN_METHODS[0], notes: '' })
+  // Single source of truth (get_transaction_settlement) for "what's left
+  // on this sale" — fetched once at lookup time, consulted for the item
+  // picker (step 2) and the Details-step summary card (step 3), and
+  // enforced again server-side inside create_return itself.
+  const [settlement, setSettlement] = useState(null)
   // Evidence photos — the picker manages its own upload state internally
   // and just reports the successfully-uploaded storage paths up here;
   // photoPickerKey forces it to remount (fresh draft folder, empty
@@ -64,6 +73,21 @@ export default function Returns() {
   const [clientRequestId, setClientRequestId] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
+
+  // Notify-by-email — address staff picks at submission time, saved on the
+  // request itself (notify_email), not the customer's account email. Now
+  // REQUIRED for every new request (the customer's saved email counts as
+  // already "provided" — effectiveNotifyEmail below only reads the typed
+  // input when there's no saved email to fall back on, or the admin
+  // explicitly opted into a different one). Reset whenever a new sale is
+  // looked up (handleLookup below).
+  const [notifyEmail, setNotifyEmail] = useState('')
+  const [useDifferentEmail, setUseDifferentEmail] = useState(false)
+  const [notifyEmailTouched, setNotifyEmailTouched] = useState(false)
+  const selectedCustomer = selectedSale?.customerId ? customers.find(c => c.id === selectedSale.customerId) : null
+  const effectiveNotifyEmail = (selectedCustomer?.email && !useDifferentEmail) ? selectedCustomer.email : notifyEmail.trim()
+  const notifyEmailValid = isValidEmail(effectiveNotifyEmail)
+  const notifyEmailErrorMsg = !notifyEmailTouched ? '' : !effectiveNotifyEmail ? 'Email is required' : !notifyEmailValid ? 'Enter a valid email address' : ''
 
   const daysSince = selectedSale ? differenceInCalendarDays(new Date(), new Date(selectedSale.createdAt)) : null
   const expired = daysSince != null && daysSince > SALE_ADJUSTMENT_DAYS
@@ -112,19 +136,6 @@ export default function Returns() {
   const { subtotal, vat, total } = calcTotals()
   const selectedCount = Object.values(returnItems).filter(r => r.selected).length
 
-  // Every item on this sale already covered by an APPROVED return — same
-  // check SaleLookup.jsx uses to grey out a Recent Transactions row, just
-  // adapted to findSaleForReturn's item shape (item.productId, not
-  // item.id). Without this, searching/scanning a transaction directly
-  // bypassed the exact same "nothing left to return" rule the recent-list
-  // row already enforces by being disabled.
-  const isFullyReturned = (sale) => sale.items.every(item => {
-    const returnedQty = returns
-      .filter(r => r.transactionId === sale.id && r.status === 'Approved')
-      .reduce((sum, r) => sum + (r.items || []).filter(i => i.product_id === item.productId).reduce((s, i) => s + (i.qty || 0), 0), 0)
-    return returnedQty >= item.qty
-  })
-
   // ── Handlers ─────────────────────────────────────────────
   const handleLookup = async (query) => {
     if (!query.trim()) return { ok: false, message: 'Enter a transaction ID or scan a serial' }
@@ -133,13 +144,26 @@ export default function Returns() {
     if (!sale.items.length) return { ok: false, message: 'No items found for this sale' }
     const daysSinceSale = differenceInCalendarDays(new Date(), new Date(sale.createdAt))
     if (daysSinceSale > SALE_ADJUSTMENT_DAYS) return { ok: false, message: `Return period expired: items can only be returned within ${SALE_ADJUSTMENT_DAYS} days of purchase` }
-    if (isFullyReturned(sale)) return { ok: false, message: 'This transaction has already been fully returned' }
+    // Single source of truth for "is there anything left to claim here" —
+    // same get_transaction_settlement RPC the Recent Transactions badges
+    // read and create_return itself re-checks on submit. Keyed only on
+    // transaction_id, so walk-in sales behave identically to registered
+    // ones (no customer_id involved anywhere in this check).
+    const settled = await fetchTransactionSettlement(sale.id)
+    if (!settled) return { ok: false, message: "Couldn't check this transaction's status — please try again" }
+    if (settled.status === 'pending') return { ok: false, message: `This transaction already has a pending ${settled.pendingKind} #${String(settled.pendingId).padStart(4, '0')} awaiting a decision` }
+    if (settled.status === 'settled') return { ok: false, message: 'This transaction has already been fully returned/refunded' }
 
     setSelectedSale(sale)
+    setSettlement(settled)
     const init = {}
     sale.items.forEach(item => { init[item.itemId] = { selected: false, qty: 1, selectedSerials: [] } })
     setReturnItems(init)
     setClientRequestId(crypto.randomUUID())
+    const cust = sale.customerId ? customers.find(c => c.id === sale.customerId) : null
+    setUseDifferentEmail(false)
+    setNotifyEmail(cust?.email || '')
+    setNotifyEmailTouched(false)
     setStep(2)
     return { ok: true, message: `Found ${sale.id ? `#${String(sale.id).padStart(4, '0')}` : 'sale'}` }
   }
@@ -166,6 +190,11 @@ export default function Returns() {
       const match = item.serials.find(s => s.serialNumber === code)
       if (!match) continue
       if (match.status !== 'Sold') return { ok: false, message: `Serial is ${match.status}, not returnable` }
+      // A serial with a Pending return doesn't change its DB status until
+      // approval, so the check above alone would miss it — same settlement
+      // data the manual-select chips below already filter against.
+      const claim = (settlement?.serialStatuses || []).find(x => x.serial === code)
+      if (claim) return { ok: false, message: `Serial already has a ${claim.status === 'returned' ? 'completed' : 'pending'} return` }
       if (returnItems[item.itemId]?.selectedSerials?.includes(code)) return { ok: false, message: 'Already selected' }
       toggleSerial(item.itemId, code)
       return { ok: true, message: `${item.name} — added ${code}` }
@@ -180,6 +209,7 @@ export default function Returns() {
   const goToStep4 = () => {
     if (!details.reason) return toast('Please select a reason', 'error')
     if (evidencePhotos.length === 0) return toast('Add at least 1 evidence photo', 'error')
+    if (!notifyEmailValid) { setNotifyEmailTouched(true); return }
     setStep(4)
   }
 
@@ -208,6 +238,7 @@ export default function Returns() {
         items,
         evidencePhotos,
         clientRequestId: clientRequestId,
+        notifyEmail: effectiveNotifyEmail.toLowerCase(),
       })
       if (error) return toast(error.message || 'Failed to submit return', 'error')
       toast(`Return #${String(id).padStart(4, '0')} submitted`, 'success')
@@ -231,11 +262,12 @@ export default function Returns() {
   }
 
   const resetWizard = () => {
-    setStep(1); setSelectedSale(null); setReturnItems({})
+    setStep(1); setSelectedSale(null); setReturnItems({}); setSettlement(null)
     setDetails({ reason: RETURN_REASONS[0], method: RETURN_METHODS[0], notes: '' })
     setEvidencePhotos([])
     setPhotoPickerKey(k => k + 1)
     setClientRequestId(null)
+    setNotifyEmail(''); setUseDifferentEmail(false); setNotifyEmailTouched(false)
   }
 
   const border = '1px solid var(--border)'
@@ -338,14 +370,31 @@ export default function Returns() {
                   const ri = returnItems[item.itemId]
                   const isSelected = ri?.selected
                   const hasSerials = item.serials.length > 0
-                  const soldSerials = item.serials.filter(s => s.status === 'Sold')
+                  // A unit already covered by a Pending or Approved return on
+                  // THIS sale must not be selectable again — read off the
+                  // same get_transaction_settlement result the Details-step
+                  // card and create_return itself use, so the cashier can
+                  // no longer click something the server would reject
+                  // anyway. See TransactionSummaryCard.jsx's unitBreakdown
+                  // for the identical computation.
+                  const pendingOrReturnedSerials = new Set(
+                    (settlement?.serialStatuses || [])
+                      .filter(x => x.itemId === item.itemId)
+                      .map(x => x.serial)
+                  )
+                  const soldSerials = item.serials.filter(s => s.status === 'Sold' && !pendingOrReturnedSerials.has(s.serialNumber))
+                  const claimed = (settlement?.itemQtyClaimed || []).find(x => x.itemId === item.itemId)
+                  const alreadyClaimedQty = (claimed?.returnedQty || 0) + (claimed?.pendingQty || 0)
+                  const availableQty = Math.max(0, item.qty - alreadyClaimedQty)
+                  const fullyClaimed = !hasSerials && availableQty === 0
                   return (
                     <div key={item.itemId} style={{
                       background: isSelected ? (isLight ? '#ecfdf5' : 'rgba(52,211,153,0.05)') : 'var(--bg3)',
                       border: `1px solid ${isSelected ? (isLight ? '#6ee7b7' : 'rgba(52,211,153,0.3)') : 'var(--border)'}`,
                       borderRadius: 10, padding: '10px 12px',
+                      opacity: fullyClaimed ? 0.55 : 1,
                     }}>
-                      <div onClick={() => !hasSerials && toggleItem(item.itemId)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: hasSerials ? 'default' : 'pointer' }}>
+                      <div onClick={() => !hasSerials && !fullyClaimed && toggleItem(item.itemId)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: (hasSerials || fullyClaimed) ? 'default' : 'pointer' }}>
                         {!hasSerials && (
                           <div style={{ width: 18, height: 18, borderRadius: 5, flexShrink: 0, border: `2px solid ${isSelected ? (isLight ? '#059669' : 'var(--accent)') : 'var(--border2)'}`, background: isSelected ? (isLight ? '#059669' : 'var(--accent)') : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             {isSelected && <span style={{ fontSize: 10, color: '#0a0a0a', fontWeight: 700 }}>✓</span>}
@@ -356,20 +405,22 @@ export default function Returns() {
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 12, fontWeight: 600 }}>{item.name}</div>
-                          <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 1 }}>{peso(item.price)} × {item.qty} sold</div>
+                          <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 1 }}>
+                            {peso(item.price)} × {item.qty} sold{!hasSerials && alreadyClaimedQty > 0 && ` · ${fullyClaimed ? 'all already returned' : `${availableQty} left to return`}`}
+                          </div>
                         </div>
                         {!hasSerials && isSelected && (
                           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <button onClick={() => setItemQty(item.itemId, ri.qty - 1, item.qty)} style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border2)', background: 'var(--bg4)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>−</button>
+                            <button onClick={() => setItemQty(item.itemId, ri.qty - 1, availableQty)} style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border2)', background: 'var(--bg4)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>−</button>
                             <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12, minWidth: 20, textAlign: 'center', fontWeight: 700 }}>{ri.qty}</span>
-                            <button onClick={() => setItemQty(item.itemId, ri.qty + 1, item.qty)} style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border2)', background: 'var(--bg4)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>+</button>
+                            <button onClick={() => setItemQty(item.itemId, ri.qty + 1, availableQty)} style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border2)', background: 'var(--bg4)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>+</button>
                           </div>
                         )}
                       </div>
                       {hasSerials && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8, paddingLeft: 48 }}>
                           {soldSerials.length === 0
-                            ? <span style={{ fontSize: 10.5, color: 'var(--text3)', fontStyle: 'italic' }}>All units already returned</span>
+                            ? <span style={{ fontSize: 10.5, color: 'var(--text3)', fontStyle: 'italic' }}>All units already returned or pending</span>
                             : soldSerials.map(s => {
                               const checked = ri?.selectedSerials?.includes(s.serialNumber)
                               return (
@@ -396,8 +447,12 @@ export default function Returns() {
           )}
 
           {/* STEP 3 */}
-          {step === 3 && (
+          {step === 3 && selectedSale && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <TransactionSummaryCard
+                txn={selectedSale} items={selectedSale.items} products={products} customer={selectedCustomer}
+                returns={returns} refunds={refunds} settlement={settlement} daysSince={daysSince} expired={expired} isLight={isLight}
+              />
               <div>
                 <label style={{ fontSize: 10, color: 'var(--text3)', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>{t('reason')} *</label>
                 <select className="form-field" value={details.reason} onChange={e => setDetails(d => ({ ...d, reason: e.target.value }))}>
@@ -426,6 +481,33 @@ export default function Returns() {
                 <textarea className="form-field form-field-textarea" rows={3} placeholder="Additional notes about this return..." value={details.notes} onChange={e => setDetails(d => ({ ...d, notes: e.target.value }))} />
               </div>
               <div>
+                <label style={{ fontSize: 10, color: 'var(--text3)', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                  {selectedCustomer?.email && !useDifferentEmail ? 'Notify customer by email' : 'Customer email (required)'}
+                </label>
+                {selectedCustomer?.email && !useDifferentEmail ? (
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--text2)' }}>Send updates to: <strong style={{ color: 'var(--text)' }}>{selectedCustomer.email}</strong></div>
+                    <button type="button" onClick={() => { setUseDifferentEmail(true); setNotifyEmail('') }} style={{ background: 'none', border: 'none', padding: 0, marginTop: 4, color: isLight ? '#059669' : 'var(--accent)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                      Use a different email
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {selectedCustomer?.email && useDifferentEmail && (
+                      <button type="button" onClick={() => { setUseDifferentEmail(false); setNotifyEmail(selectedCustomer.email) }} style={{ background: 'none', border: 'none', padding: 0, marginBottom: 6, color: isLight ? '#059669' : 'var(--accent)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'block' }}>
+                        ← Use {selectedCustomer.email} instead
+                      </button>
+                    )}
+                    <input type="email" className="form-field" placeholder="juan@gmail.com"
+                      value={notifyEmail} onChange={e => setNotifyEmail(e.target.value)} onBlur={() => setNotifyEmailTouched(true)} />
+                    <div style={{ fontSize: 10.5, color: 'var(--text3)', marginTop: 5, lineHeight: 1.5 }}>
+                      The customer will be notified here when the request is approved or rejected.
+                    </div>
+                    {notifyEmailErrorMsg && <div style={{ fontSize: 10.5, color: 'var(--red)', fontWeight: 600, marginTop: 5 }}>{notifyEmailErrorMsg}</div>}
+                  </>
+                )}
+              </div>
+              <div>
                 <label style={{ fontSize: 10, color: 'var(--text3)', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>Evidence Photos *</label>
                 <EvidencePhotoPicker key={photoPickerKey} onChange={setEvidencePhotos} />
                 {evidencePhotos.length === 0 && (
@@ -434,7 +516,7 @@ export default function Returns() {
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={() => setStep(2)} className="btn-secondary" style={{ flex: 1, ...navBtn }}>← Back</button>
-                <button onClick={goToStep4} disabled={evidencePhotos.length === 0} className="btn-primary" style={{ flex: 2, ...navBtn, opacity: evidencePhotos.length === 0 ? 0.5 : 1, cursor: evidencePhotos.length === 0 ? 'not-allowed' : 'pointer' }}>Review →</button>
+                <button onClick={goToStep4} disabled={evidencePhotos.length === 0 || !notifyEmailValid} className="btn-primary" style={{ flex: 2, ...navBtn, opacity: (evidencePhotos.length === 0 || !notifyEmailValid) ? 0.5 : 1, cursor: (evidencePhotos.length === 0 || !notifyEmailValid) ? 'not-allowed' : 'pointer' }}>Review →</button>
               </div>
             </div>
           )}
@@ -466,9 +548,13 @@ export default function Returns() {
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text2)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--text3)' }}>Transaction</span><span>#{String(selectedSale.id).padStart(4, '0')}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--text3)' }}>Customer</span><span>{selectedSale.customerName || 'Walk-in'}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--text3)' }}>Reason</span><span>{details.reason}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--text3)' }}>Method</span><span>{details.method}</span></div>
+                {details.notes && <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}><span style={{ color: 'var(--text3)', flexShrink: 0 }}>Notes</span><span style={{ textAlign: 'right' }}>{details.notes}</span></div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--text3)' }}>Evidence Photos</span><span>{evidencePhotos.length === 0 ? 'None' : `${evidencePhotos.length} attached`}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}><span style={{ color: 'var(--text3)', flexShrink: 0 }}>Notify Email</span><span style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace" }}>{effectiveNotifyEmail}</span></div>
               </div>
               {expired && (
                 <div style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: 10, fontSize: 11, color: 'var(--red)', lineHeight: 1.6, display: 'flex', gap: 6 }}>

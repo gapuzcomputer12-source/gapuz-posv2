@@ -17,6 +17,12 @@ export const fmtDate = (d) => new Date(d).toLocaleDateString('en-PH',{month:'sho
 export const fmtDateTime = (d) => new Date(d).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
 export const fmtTxnId = (id) => '#'+String(id).padStart(4,'0')
 
+// Generic (not Gmail-only) email format check — used for the return/refund
+// "notify customer" address, which is just a delivery address, not tied to
+// a customer account the way Customers.jsx's stricter Gmail-only rule is.
+export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+export const isValidEmail = (s) => EMAIL_RE.test(String(s||'').trim())
+
 // Shared password policy — used by ResetPassword, the Layout profile modal,
 // and Staff add/edit, so every place an account password gets set enforces
 // the same rule instead of some screens staying on the old 6-char minimum.

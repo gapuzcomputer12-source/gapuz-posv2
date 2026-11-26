@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { startOfDay, endOfDay, subDays, startOfMonth, endOfMonth, eachDayOfInterval, eachMonthOfInterval, format, differenceInCalendarDays } from 'date-fns'
-import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore, useCategoryStore } from '../store'
+import { useTransactionStore, useProductStore, useCustomerStore, useRefundStore, useReturnStore, useAuthStore, useCategoryStore, useRewardStore } from '../store'
 import { useT, peso, getTier, fmtDate, refundSettledAmount, getEffectiveLowStockLevel } from '../utils/helpers'
 import { computeSalesMetrics, isMoneyBack } from '../utils/salesMetrics'
 import { addSheet, addMultiTableSheet, downloadWorkbook, createWorkbook } from '../utils/exportXlsx'
@@ -9,7 +9,7 @@ import { ComposedChart, Area, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import {
   Download, Trophy, TrendingDown, AlertTriangle, Archive, AlertOctagon, ClipboardList, Ban,
   TrendingUp, Undo2, Wallet, Coins, Receipt, Calculator, Package, Layers, Tag, Clock, RotateCcw,
-  Banknote, XCircle, Users, Star, Gem, Award,
+  Banknote, XCircle, Users, Star, Gem, Award, Gift,
 } from 'lucide-react'
 import ProductThumb from '../components/ProductThumb'
 import SalesBreakdownCard from '../components/SalesBreakdownCard'
@@ -114,6 +114,7 @@ export default function Reports(){
   const customers    = useCustomerStore(s=>s.customers)
   const refunds      = useRefundStore(s=>s.refunds)
   const returns      = useReturnStore(s=>s.returns)
+  const redemptions  = useRewardStore(s=>s.redemptions)
   const { user }     = useAuthStore()
   const t            = useT()
   const [searchParams] = useSearchParams()
@@ -432,6 +433,26 @@ export default function Reports(){
     {tier:'Platinum', range:'3,000+ pts',        count:platinumCount},
   ].map(tc=>({...tc, pct: customers.length?Math.round(tc.count/customers.length*1000)/10:0}))
 
+  // Tier Rewards Claimed — period-scoped like every other "submitted this
+  // period" list on this page (refundsSubmitted/returnsSubmitted). Never
+  // overlaps sales/VAT/top-selling/etc. — claim_tier_reward never writes a
+  // transactions row, see add_tier_rewards.sql. Old points-exchange rows
+  // (tier IS NULL) still show up here too, just with "—" in the Tier column.
+  const redemptionsFiltered = useMemo(()=>redemptions.filter(r=>inPeriod(new Date(r.createdAt))),[redemptions,periodStart,periodEnd]) // eslint-disable-line react-hooks/exhaustive-deps
+  const redemptionsSorted = useMemo(()=>[...redemptionsFiltered].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)),[redemptionsFiltered])
+  const redemptionsPg = usePagination(redemptionsSorted)
+  useEffect(()=>{ redemptionsPg.setPage(1) },[period,customFrom,customTo]) // eslint-disable-line react-hooks/exhaustive-deps
+  const totalPointsUsed = redemptionsFiltered.reduce((s,r)=>s+(r.pointsUsed||0),0)
+  const mostClaimedItems = useMemo(()=>{
+    const map={}
+    redemptionsFiltered.forEach(r=>{
+      const key=r.productName||'Unknown item'
+      if(!map[key]) map[key]={name:key,timesClaimed:0}
+      map[key].timesClaimed+=1
+    })
+    return Object.values(map).sort((a,b)=>b.timesClaimed-a.timesClaimed)
+  },[redemptionsFiltered])
+
   // ── EXPORT ─────────────────────────────────────────────────────
   // Real calendar dates for export headers — periodLabel is a UI shortcut
   // ("Today", "This Week") that doesn't belong in a downloaded file.
@@ -470,6 +491,7 @@ export default function Reports(){
       {header:'Cashier',value:r=>r.cashierName||'—'},
       {header:'Items',value:r=>(r.items||[]).map(i=>`${i.name} ×${i.qty}`).join(', ')},
       {header:'Payment',value:r=>r.payment},
+      {header:'GCash Ref. No.',value:r=>r.gcashReference||'—'},
       {header:'Subtotal',value:r=>r.subtotal||r.total,money:true,total:true},
       {header:'VAT',value:r=>r.vat||0,money:true,total:true},
       {header:'Total',value:r=>r.total,money:true,total:true},
@@ -597,6 +619,20 @@ export default function Reports(){
       {header:'Count',value:r=>r.count,total:true},
       {header:'% of Total',value:r=>r.pct/100,percent:true},
     ], rows: tierSummaryRows })
+    addSheet(wb, { ...opts, name: 'Tier Rewards Claimed', columns: [
+      {header:'Date',value:r=>new Date(r.createdAt),date:true},
+      {header:'Redemption No.',value:r=>r.redemptionNo},
+      {header:'Customer',value:r=>r.customerName||'—'},
+      {header:'Item',value:r=>r.productName||'—'},
+      {header:'Serial No.',value:r=>r.serialNumber||'—'},
+      {header:'Tier',value:r=>r.tier?r.tier.charAt(0).toUpperCase()+r.tier.slice(1):'—'},
+      {header:'Points Used',value:r=>r.pointsUsed||0,total:true},
+      {header:'Staff',value:r=>r.redeemedByName||'—'},
+    ], rows: redemptionsSorted })
+    addSheet(wb, { ...opts, name: 'Most Claimed Items', columns: [
+      {header:'Item',value:r=>r.name},
+      {header:'Times Claimed',value:r=>r.timesClaimed,total:true},
+    ], rows: mostClaimedItems })
   }
 
   // Exports just the open tab's sheets, scoped to whichever period the
@@ -770,11 +806,11 @@ export default function Reports(){
             <div className="rpt-table-wrap"><div className="rpt-table-scroll">
               <table className="rpt-table">
                 <thead><tr>
-                  <th>Txn #</th><th>Date & time</th><th>Customer</th><th>Items</th><th>Payment</th>
+                  <th>Txn #</th><th>Date & time</th><th>Customer</th><th>Items</th><th>Payment</th><th>GCash Ref. No.</th>
                   <th className="num">Subtotal</th><th className="num">VAT</th><th className="num">Total</th>
                 </tr></thead>
                 <tbody>
-                  {filtered.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--rpt-muted)'}}>No transactions for this period.</td></tr>
+                  {filtered.length===0?<tr><td colSpan={9} style={{textAlign:'center',padding:40,color:'var(--rpt-muted)'}}>No transactions for this period.</td></tr>
                   :txPg.pageItems.map(tx=>(
                     <tr key={tx.id}>
                       <td style={{color:'var(--rpt-green)',fontWeight:600}}>#{String(tx.id).padStart(4,'0')}</td>
@@ -782,6 +818,7 @@ export default function Reports(){
                       <td>{tx.customerName||'Walk-in'}</td>
                       <td style={{color:'var(--rpt-muted)'}}>{(tx.items||[]).length} item(s)</td>
                       <td><span className="rpt-pill rpt-pill-gray"><span className="dot" style={{background:paymentColor(tx.payment)}}/>{tx.payment}</span></td>
+                      <td style={{color:'var(--rpt-muted)',fontFamily:"'JetBrains Mono',monospace",fontSize:11.5}}>{tx.gcashReference||'—'}</td>
                       <td className="num">{peso(tx.subtotal||tx.total)}</td>
                       <td className="num" style={{color:'var(--rpt-muted)'}}>{peso(tx.vat||0)}</td>
                       <td className="num" style={{fontWeight:700,color:'var(--rpt-title)'}}>{peso(tx.total)}</td>
@@ -1113,6 +1150,51 @@ export default function Reports(){
               })}
             </div>
           </ChartCard>
+
+          <div className="rpt-grid-12">
+            <div className="rpt-col-7">
+              <ChartCard title={<><Gift size={14} style={{color:'#8B5CF6'}}/>Tier Rewards Claimed</>} subtitle={`Free items claimed by tier during ${periodLabel}.`}>
+                <div className="rpt-table-wrap"><div className="rpt-table-scroll">
+                  <table className="rpt-table">
+                    <thead><tr>
+                      <th>Date</th><th>Redemption No.</th><th>Customer</th><th>Item</th><th>Serial No.</th>
+                      <th>Tier</th><th className="num">Points Used</th><th>Staff</th>
+                    </tr></thead>
+                    <tbody>
+                      {redemptionsSorted.length===0?<tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--rpt-muted)'}}>No tier rewards claimed this period.</td></tr>
+                      :redemptionsPg.pageItems.map(r=>(
+                        <tr key={r.id}>
+                          <td style={{color:'var(--rpt-muted)'}}>{new Date(r.createdAt).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+                          <td style={{color:'var(--rpt-green)',fontWeight:600}}>{r.redemptionNo}</td>
+                          <td>{r.customerName||'—'}</td>
+                          <td>{r.productName||'—'}</td>
+                          <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11.5,color:'var(--rpt-muted)'}}>{r.serialNumber||'—'}</td>
+                          <td style={{fontWeight:700,color:'var(--rpt-title)'}}>{r.tier?r.tier.charAt(0).toUpperCase()+r.tier.slice(1):'—'}</td>
+                          <td className="num" style={{fontWeight:700,color:'var(--rpt-title)'}}>{(r.pointsUsed||0).toLocaleString()}</td>
+                          <td style={{color:'var(--rpt-muted)'}}>{r.redeemedByName||'—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div></div>
+                <Pagination {...redemptionsPg}/>
+                <div style={{marginTop:10,fontSize:12.5,fontWeight:700,color:'var(--rpt-title)'}}>Total points used: {totalPointsUsed.toLocaleString()}</div>
+              </ChartCard>
+            </div>
+            <div className="rpt-col-5">
+              <ChartCard title="Most Claimed Items" subtitle={periodLabel}>
+                <div className="ranked-list-scroll">
+                  <RankedList
+                    items={mostClaimedItems.map(it=>({key:it.name,label:it.name,value:it.timesClaimed,_it:it}))}
+                    max={Math.max(...mostClaimedItems.map(it=>it.timesClaimed),1)}
+                    renderLeft={it=><ProductThumb {...(products.find(pr=>pr.name===it._it.name)||{})} size={24} radius={6}/>}
+                    renderValue={it=>`${it._it.timesClaimed}× claimed`}
+                    emptyText="No tier rewards claimed this period."
+                  />
+                </div>
+              </ChartCard>
+            </div>
+          </div>
         </>}
 
         </div>

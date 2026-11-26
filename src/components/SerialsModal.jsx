@@ -12,6 +12,7 @@ const STATUS_STYLE = {
   'In Stock': { bg: 'rgba(52,211,153,0.1)', border: 'rgba(52,211,153,0.25)', color: 'var(--green)' },
   'Sold':     { bg: 'rgba(59,130,246,0.1)', border: 'rgba(59,130,246,0.25)', color: 'var(--blue)' },
   'Defective':{ bg: 'rgba(239,68,68,0.1)',  border: 'rgba(239,68,68,0.25)', color: 'var(--red)' },
+  'Redeemed': { bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.25)', color: 'var(--purple)' },
 }
 
 function StatusBadge({ status }) {

@@ -2,10 +2,11 @@ import { useState, useMemo, useEffect, useRef, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { differenceInCalendarDays } from 'date-fns'
 import { RefreshCw, ClipboardList, Clock, CheckCircle2, Eye, Tag, AlertTriangle, Check, Info } from 'lucide-react'
-import { useRefundStore, useTransactionStore, useAuthStore, useCustomerStore, useAppStore, useReturnStore, resolveLookupId } from '../store'
+import { useRefundStore, useTransactionStore, useAuthStore, useCustomerStore, useProductStore, useAppStore, useReturnStore, resolveLookupId, fetchSaleSerialsByProduct, fetchTransactionSettlement } from '../store'
 import { useToast } from '../utils/toast'
-import { useT, peso, fmtDate, SALE_ADJUSTMENT_DAYS, REFUND_REASONS, REFUND_REASON_OTHER, refundSettledAmount, moneyBackReturnSettledAmount, totalSettledAmount } from '../utils/helpers'
+import { useT, peso, fmtDate, isValidEmail, SALE_ADJUSTMENT_DAYS, REFUND_REASONS, REFUND_REASON_OTHER, refundSettledAmount, moneyBackReturnSettledAmount } from '../utils/helpers'
 import RefundDetailsModal, { StatusBadge, METHOD_ICON } from '../components/RefundDetailsModal'
+import TransactionSummaryCard from '../components/TransactionSummaryCard'
 import PolicyModal from '../components/PolicyModal'
 import SaleLookup from '../components/SaleLookup'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
@@ -31,7 +32,8 @@ export default function Refunds() {
   const { transactions, updateTransaction } = useTransactionStore()
   const { refunds, addRefund, updateRefund, rejectRefund } = useRefundStore()
   const { returns } = useReturnStore()
-  const { revertPurchase } = useCustomerStore()
+  const { customers, revertPurchase } = useCustomerStore()
+  const products = useProductStore(s => s.products)
   const [searchParams] = useSearchParams()
 
   const isAdmin = role === 'admin'
@@ -51,6 +53,27 @@ export default function Refunds() {
     method: 'Cash',
     notes: '',
   })
+  // The transaction's own items (already included on every row from
+  // useTransactionStore's join — see TXN_SELECT) plus a dedicated serials
+  // lookup, keyed by product_id, for the Details-step summary card. Reset
+  // on every new lookup; display-only, never gates the (money-only) refund
+  // amount the way Returns' item picker does.
+  const [saleSerials, setSaleSerials] = useState([])
+  const summaryItems = useMemo(() =>
+    (selectedTxn?.items || []).map(it => ({ ...it, productId: it.id, serials: saleSerials.filter(s => s.productId === it.id) })),
+    [selectedTxn, saleSerials]
+  )
+  // GCash refund reference — the number for the money sent BACK to the
+  // customer (distinct from the sale's own gcash_reference). Required only
+  // when the refund method is GCash — see add_refund_gcash_reference.sql.
+  const [gcashRef, setGcashRef] = useState('')
+  const [gcashRefTouched, setGcashRefTouched] = useState(false)
+  const gcashRefValid = /^\d{13}$/.test(gcashRef.trim())
+  // Single source of truth (get_transaction_settlement) for "what's left
+  // on this sale" — fetched once at lookup time, used for the remaining-
+  // amount cap and the Details-step summary card, and enforced again
+  // server-side inside create_refund itself.
+  const [settlement, setSettlement] = useState(null)
   // One id per form-open (set in handleLookup, when step 2 actually opens),
   // reused across every submit attempt for that same form — lets
   // create_refund recognize a spam-clicked retry and return the existing
@@ -61,6 +84,21 @@ export default function Refunds() {
   const [clientRequestId, setClientRequestId] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
+
+  // Notify-by-email — address staff picks at submission time, saved on the
+  // request itself (notify_email), not the customer's account email. Now
+  // REQUIRED for every new request (the customer's saved email counts as
+  // already "provided" — effectiveNotifyEmail below only reads the typed
+  // input when there's no saved email to fall back on, or the admin
+  // explicitly opted into a different one). Reset whenever a new sale is
+  // looked up (handleLookup below).
+  const [notifyEmail, setNotifyEmail] = useState('')
+  const [useDifferentEmail, setUseDifferentEmail] = useState(false)
+  const [notifyEmailTouched, setNotifyEmailTouched] = useState(false)
+  const selectedCustomer = selectedTxn?.customerId ? customers.find(c => c.id === selectedTxn.customerId) : null
+  const effectiveNotifyEmail = (selectedCustomer?.email && !useDifferentEmail) ? selectedCustomer.email : notifyEmail.trim()
+  const notifyEmailValid = isValidEmail(effectiveNotifyEmail)
+  const notifyEmailErrorMsg = !notifyEmailTouched ? '' : !effectiveNotifyEmail ? 'Email is required' : !notifyEmailValid ? 'Enter a valid email address' : ''
 
   // ── Stats ─────────────────────────────────────────────────
   const pendingCount = useMemo(() => refunds.filter(r => r.status === 'Pending').length, [refunds])
@@ -98,12 +136,10 @@ export default function Refunds() {
   const refundsPg = usePagination(filteredRefunds)
   useEffect(() => { refundsPg.setPage(1) }, [filterStatus])
 
-  // How much of this transaction is still refundable: its total minus
-  // every Pending/Approved refund already filed AND every Pending/Approved
-  // money-back return (a Replacement return pays nothing back, so it's
-  // excluded — see isMoneyBack in salesMetrics.js). Mirrors the cap
-  // create_refund itself enforces server-side (add_create_refund_rpc.sql).
-  const remaining = selectedTxn ? Math.max(0, selectedTxn.total - totalSettledAmount(selectedTxn.id, refunds, returns)) : 0
+  // How much of this transaction is still refundable — read straight off
+  // the settlement fetched at lookup time (see handleLookup), the exact
+  // same number create_refund itself re-checks on submit.
+  const remaining = settlement ? settlement.remainingRefundable : 0
 
   const daysSince = selectedTxn ? differenceInCalendarDays(new Date(), new Date(selectedTxn.createdAt)) : null
   const expired = daysSince != null && daysSince > SALE_ADJUSTMENT_DAYS
@@ -159,13 +195,31 @@ export default function Refunds() {
     const txnId = await resolveLookupId(trimmed)
     const txn = txnId != null ? transactions.find(tx => tx.id === txnId) : null
     if (!txn) return { ok: false, message: t('txn_not_found') }
-    if (refunds.some(r => r.transactionId === txn.id && r.status === 'Pending')) return { ok: false, message: 'This transaction already has a pending refund request' }
     const daysSinceTxn = differenceInCalendarDays(new Date(), new Date(txn.createdAt))
     if (daysSinceTxn > SALE_ADJUSTMENT_DAYS) return { ok: false, message: `Refund period expired: refunds can only be requested within ${SALE_ADJUSTMENT_DAYS} days of purchase` }
-    if (totalSettledAmount(txn.id, refunds, returns) >= txn.total) return { ok: false, message: 'This transaction has already been fully refunded' }
+    // Single source of truth for "is there anything left to claim here" —
+    // same get_transaction_settlement RPC the Recent Transactions badges
+    // read and create_refund itself re-checks on submit. Keyed only on
+    // transaction_id, so walk-in sales behave identically to registered
+    // ones (no customer_id involved anywhere in this check).
+    const settled = await fetchTransactionSettlement(txn.id)
+    if (!settled) return { ok: false, message: "Couldn't check this transaction's status — please try again" }
+    if (settled.status === 'pending') return { ok: false, message: `This transaction already has a pending ${settled.pendingKind} #${String(settled.pendingId).padStart(4, '0')} awaiting a decision` }
+    if (settled.status === 'settled') return { ok: false, message: 'This transaction has already been fully refunded/returned' }
     setSelectedTxn(txn)
-    setDetails({ reason: REFUND_REASONS[0], amount: '', method: 'Cash', notes: '' })
+    setSettlement(settled)
+    // Pre-select the method actually used on the sale — only when it was a
+    // single, non-split payment (REFUND_METHODS has no "Split" option, and
+    // a split sale's own cash/GCash breakdown by amount isn't persisted).
+    const defaultMethod = REFUND_METHODS.includes(txn.payment) ? txn.payment : 'Cash'
+    setDetails({ reason: REFUND_REASONS[0], amount: '', method: defaultMethod, notes: '' })
+    setGcashRef(''); setGcashRefTouched(false)
     setClientRequestId(crypto.randomUUID())
+    const cust = txn.customerId ? customers.find(c => c.id === txn.customerId) : null
+    setUseDifferentEmail(false)
+    setNotifyEmail(cust?.email || '')
+    setNotifyEmailTouched(false)
+    fetchSaleSerialsByProduct(txn.id).then(setSaleSerials)
     setStep(2)
     return { ok: true, message: `Found #${String(txn.id).padStart(4, '0')}` }
   }
@@ -176,6 +230,8 @@ export default function Refunds() {
     if (!amt || amt <= 0) return toast('Enter a refund amount', 'error')
     if (amt > remaining) return toast(`Refund amount can't exceed ${peso(remaining)} remaining on this transaction`, 'error')
     if (details.reason === REFUND_REASON_OTHER && !details.notes.trim()) return toast('Please explain the reason in the notes.', 'error')
+    if (details.method === 'GCash' && !gcashRefValid) { setGcashRefTouched(true); return }
+    if (!notifyEmailValid) { setNotifyEmailTouched(true); return }
     setStep(3)
   }
 
@@ -191,6 +247,8 @@ export default function Refunds() {
         refundMethod: details.method,
         notes: details.notes,
         clientRequestId: clientRequestId,
+        notifyEmail: effectiveNotifyEmail.toLowerCase(),
+        gcashReference: details.method === 'GCash' ? gcashRef.trim() : null,
       })
       if (error) return toast(error.message || 'Failed to submit refund — please try again', 'error')
       toast(t('refund_processed'), 'success')
@@ -216,9 +274,11 @@ export default function Refunds() {
   }
 
   const resetWizard = () => {
-    setStep(1); setSelectedTxn(null)
+    setStep(1); setSelectedTxn(null); setSettlement(null)
     setDetails({ reason: REFUND_REASONS[0], amount: '', method: 'Cash', notes: '' })
     setClientRequestId(null)
+    setNotifyEmail(''); setUseDifferentEmail(false); setNotifyEmailTouched(false)
+    setSaleSerials([]); setGcashRef(''); setGcashRefTouched(false)
   }
 
   // Reverses this refund's loyalty-points impact on the customer (points,
@@ -321,25 +381,10 @@ export default function Refunds() {
           {/* ── STEP 2: Refund details ── */}
           {step === 2 && selectedTxn && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {/* TXN info */}
-              <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: 12, border: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: isLight ? '#059669' : 'var(--accent)', fontWeight: 700 }}>
-                    #{String(selectedTxn.id).padStart(4, '0')}
-                  </span>
-                  <span style={{ fontSize: 10.5, color: 'var(--text3)' }}>{fmtDate(selectedTxn.createdAt)}</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
-                  {selectedTxn.customerName || 'Walk-in'} · {peso(selectedTxn.total)}
-                </div>
-                {expired ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: 'var(--red)' }}>
-                    <AlertTriangle size={13} />Refund period expired (purchased {fmtDate(selectedTxn.createdAt)})
-                  </div>
-                ) : (
-                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>Remaining refundable: <strong style={{ color: 'var(--text)' }}>{peso(remaining)}</strong></div>
-                )}
-              </div>
+              <TransactionSummaryCard
+                txn={selectedTxn} items={summaryItems} products={products} customer={selectedCustomer}
+                returns={returns} refunds={refunds} settlement={settlement} daysSince={daysSince} expired={expired} isLight={isLight}
+              />
 
               <div>
                 <label style={{ fontSize: 10, color: 'var(--text3)', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>
@@ -355,8 +400,14 @@ export default function Refunds() {
                 <label style={{ fontSize: 10, color: 'var(--text3)', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>
                   Amount (₱) *
                 </label>
-                <input type="number" min="0" max={remaining} step="0.01" className="form-field" style={{ fontVariantNumeric: 'tabular-nums' }}
-                  placeholder={`Up to ${peso(remaining)}`} value={details.amount} onChange={e => setDetails(d => ({ ...d, amount: e.target.value }))}/>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input type="number" min="0" max={remaining} step="0.01" className="form-field" style={{ fontVariantNumeric: 'tabular-nums', flex: 1 }}
+                    placeholder={`Up to ${peso(remaining)}`} value={details.amount} onChange={e => setDetails(d => ({ ...d, amount: e.target.value }))}/>
+                  <button type="button" onClick={() => setDetails(d => ({ ...d, amount: String(remaining) }))} className="btn-secondary" style={{ fontSize: 11, padding: '0 12px', flexShrink: 0 }}>
+                    Full amount
+                  </button>
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--text3)', marginTop: 5 }}>Maximum: {peso(remaining)} (remaining refundable)</div>
               </div>
 
               <div>
@@ -378,6 +429,18 @@ export default function Refunds() {
                     </button>
                   )})}
                 </div>
+                {REFUND_METHODS.includes(selectedTxn.payment) && (
+                  <div style={{ fontSize: 10.5, color: 'var(--text3)', marginTop: 5 }}>Originally paid via {selectedTxn.payment}</div>
+                )}
+                {details.method === 'GCash' && (
+                  <div style={{ marginTop: 8 }}>
+                    <input type="text" inputMode="numeric" maxLength={13} className="form-field" style={{ fontFamily: "'JetBrains Mono',monospace" }}
+                      placeholder="13-digit GCash reference number"
+                      value={gcashRef} onChange={e => setGcashRef(e.target.value.replace(/\D/g, ''))} onBlur={() => setGcashRefTouched(true)} />
+                    <div style={{ fontSize: 10.5, color: 'var(--text3)', marginTop: 5 }}>Reference number for the GCash payment sent back to the customer.</div>
+                    {gcashRefTouched && !gcashRefValid && <div style={{ fontSize: 10.5, color: 'var(--red)', fontWeight: 600, marginTop: 5 }}>Enter a valid 13-digit GCash reference number</div>}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -389,9 +452,37 @@ export default function Refunds() {
                   value={details.notes} onChange={e => setDetails(d => ({ ...d, notes: e.target.value }))}/>
               </div>
 
+              <div>
+                <label style={{ fontSize: 10, color: 'var(--text3)', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                  {selectedCustomer?.email && !useDifferentEmail ? 'Notify customer by email' : 'Customer email (required)'}
+                </label>
+                {selectedCustomer?.email && !useDifferentEmail ? (
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--text2)' }}>Send updates to: <strong style={{ color: 'var(--text)' }}>{selectedCustomer.email}</strong></div>
+                    <button type="button" onClick={() => { setUseDifferentEmail(true); setNotifyEmail('') }} style={{ background: 'none', border: 'none', padding: 0, marginTop: 4, color: isLight ? '#059669' : 'var(--accent)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                      Use a different email
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {selectedCustomer?.email && useDifferentEmail && (
+                      <button type="button" onClick={() => { setUseDifferentEmail(false); setNotifyEmail(selectedCustomer.email) }} style={{ background: 'none', border: 'none', padding: 0, marginBottom: 6, color: isLight ? '#059669' : 'var(--accent)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'block' }}>
+                        ← Use {selectedCustomer.email} instead
+                      </button>
+                    )}
+                    <input type="email" className="form-field" placeholder="juan@gmail.com"
+                      value={notifyEmail} onChange={e => setNotifyEmail(e.target.value)} onBlur={() => setNotifyEmailTouched(true)}/>
+                    <div style={{ fontSize: 10.5, color: 'var(--text3)', marginTop: 5, lineHeight: 1.5 }}>
+                      The customer will be notified here when the request is approved or rejected.
+                    </div>
+                    {notifyEmailErrorMsg && <div style={{ fontSize: 10.5, color: 'var(--red)', fontWeight: 600, marginTop: 5 }}>{notifyEmailErrorMsg}</div>}
+                  </>
+                )}
+              </div>
+
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={resetWizard} className="btn-secondary" style={{ flex: 1, ...navBtn }}>← Back</button>
-                <button onClick={goToStep3} disabled={expired} className="btn-primary" style={{ flex: 2, ...navBtn, opacity: expired ? 0.5 : 1, cursor: expired ? 'not-allowed' : 'pointer' }}>Review →</button>
+                <button onClick={goToStep3} disabled={expired || !notifyEmailValid || (details.method === 'GCash' && !gcashRefValid)} className="btn-primary" style={{ flex: 2, ...navBtn, opacity: (expired || !notifyEmailValid || (details.method === 'GCash' && !gcashRefValid)) ? 0.5 : 1, cursor: (expired || !notifyEmailValid || (details.method === 'GCash' && !gcashRefValid)) ? 'not-allowed' : 'pointer' }}>Review →</button>
               </div>
             </div>
           )}
@@ -412,16 +503,27 @@ export default function Refunds() {
                   <span style={{ color: 'var(--text3)' }}>Transaction</span><span>#{String(selectedTxn.id).padStart(4, '0')}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text3)' }}>Customer</span><span>{selectedTxn.customerName || 'Walk-in'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--text3)' }}>Reason</span><span>{details.reason}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--text3)' }}>Method</span><span>{details.method}</span>
                 </div>
+                {details.method === 'GCash' && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text3)' }}>GCash Ref. No.</span><span style={{ fontFamily: "'JetBrains Mono',monospace" }}>{gcashRef}</span>
+                  </div>
+                )}
                 {details.notes && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
                     <span style={{ color: 'var(--text3)', flexShrink: 0 }}>Notes</span><span style={{ textAlign: 'right' }}>{details.notes}</span>
                   </div>
                 )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                  <span style={{ color: 'var(--text3)', flexShrink: 0 }}>Notify Email</span><span style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace" }}>{effectiveNotifyEmail}</span>
+                </div>
               </div>
 
               {/* Cashier note */}

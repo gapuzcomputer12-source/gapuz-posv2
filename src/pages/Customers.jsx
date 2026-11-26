@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Plus, Pencil } from 'lucide-react'
+import { Pencil, Gift } from 'lucide-react'
 import { useCustomerStore } from '../store'
 import { useToast } from '../utils/toast'
 import { useT, peso, fmtDate } from '../utils/helpers'
 import { getTier } from '../utils/loyalty'
 import CustomerHistoryModal from '../components/CustomerHistoryModal'
+import RedeemRewardModal from '../components/RedeemRewardModal'
+import AddCustomerModal from '../components/AddCustomerModal'
 import Modal from '../components/Modal'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePagination } from '../hooks/usePagination'
@@ -40,18 +42,20 @@ const avatarColor = (seed) => {
 
 export default function Customers() {
   useDocumentTitle('Customers')
-  const { customers, loading, addCustomer, updateCustomer, deleteCustomer } = useCustomerStore()
+  const { customers, loading, updateCustomer, deleteCustomer } = useCustomerStore()
   const [search,   setSearch]   = useState('')
   const [modal,    setModal]    = useState(null)
   const [form,     setForm]     = useState(EMPTY)
   const [selected, setSelected] = useState(null)
   const [sortBy,   setSortBy]   = useState('name')
+  const [addOpen,  setAddOpen]  = useState(false)
   const toast = useToast()
   const t     = useT()
 
-  const openAdd  = () => { setForm(EMPTY); setModal('add') }
+  const openAdd  = () => setAddOpen(true)
   const openEdit = c => { setForm({name:c.name,email:c.email||'',phone:toPHPhone(c.phone||''),address:c.address||''}); setSelected(c); setModal('edit') }
   const openHistory = c => { setSelected(c); setModal('history') }
+  const openRedeem  = c => { setSelected(c); setModal('redeem') }
 
   const handlePhoneChange = e => setForm(f=>({...f, phone: toPHPhone(e.target.value)}))
 
@@ -63,8 +67,7 @@ export default function Customers() {
     const hasPhoneDigits = phone.replace('+63','').length>0
     if(hasPhoneDigits && !PH_PHONE_RE.test(phone)) return toast('Phone must be a valid PH number: +63 followed by 10 digits','error')
     const payload = {...form, email, phone: hasPhoneDigits?phone:''}
-    if(modal==='add') { addCustomer(payload); toast(t('customer_added'),'success') }
-    else { updateCustomer(selected.id,payload); toast(t('customer_updated'),'success') }
+    updateCustomer(selected.id,payload); toast(t('customer_updated'),'success')
     setModal(null)
   }
 
@@ -122,7 +125,8 @@ export default function Customers() {
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11}}>{c.purchases||0}</td>
                   <td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--green)',fontWeight:600}}>{peso(c.totalSpent||0)}</td>
                   <td style={{fontSize:11,color:'var(--text3)'}}>{c.createdAt?fmtDate(c.createdAt):'—'}</td>
-                  <td><div style={{display:'flex',gap:5}}>
+                  <td><div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                    <button onClick={()=>openRedeem(c)} className="btn-primary" style={{fontSize:10,padding:'4px 8px',display:'inline-flex',alignItems:'center',gap:4}}><Gift size={11}/>Claim Reward</button>
                     <button onClick={()=>openHistory(c)} className="btn-success" style={{fontSize:10,padding:'4px 8px'}}>History</button>
                     <button onClick={()=>openEdit(c)} className="btn-secondary" style={{fontSize:10,padding:'4px 8px'}}>{t('edit')}</button>
                     <button onClick={()=>handleDelete(c)} className="btn-danger" style={{fontSize:10,padding:'4px 8px'}}>{t('delete')}</button>
@@ -135,11 +139,11 @@ export default function Customers() {
       </div>
       <Pagination {...pg}/>
 
-      {/* Add/Edit Modal */}
-      {(modal==='add'||modal==='edit')&&(
+      {/* Edit Modal (add is handled by the shared AddCustomerModal below) */}
+      {modal==='edit'&&(
         <Modal open onClose={()=>setModal(null)} contentStyle={{width:'min(420px,92vw)'}}>
           <div className="card animate-scale-in" style={{padding:28}}>
-            <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}>{modal==='add'?<><Plus size={14} style={{color:'var(--green)'}}/>{t('add_customer')}</>:<><Pencil size={14} style={{color:'var(--blue)'}}/>{t('edit_customer')}</>}</div>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}><Pencil size={14} style={{color:'var(--blue)'}}/>{t('edit_customer')}</div>
             <div style={{display:'flex',flexDirection:'column',gap:14}}>
               {[['name',t('full_name'),'Juan dela Cruz','text'],['email',t('email_addr'),'juan@gmail.com','email']].map(([key,label,ph,type])=>(
                 <div key={key}><label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>{label}</label><input className="input-field" type={type} value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} placeholder={ph}/></div>
@@ -153,6 +157,8 @@ export default function Customers() {
       )}
 
       <CustomerHistoryModal open={modal==='history'} onClose={()=>setModal(null)} customer={selected}/>
+      <RedeemRewardModal open={modal==='redeem'} onClose={()=>setModal(null)} customer={selected&&(customers.find(c=>c.id===selected.id)||selected)}/>
+      <AddCustomerModal open={addOpen} onClose={()=>setAddOpen(false)}/>
     </div>
   )
 }

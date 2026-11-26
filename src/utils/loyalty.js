@@ -25,3 +25,27 @@ export const getNextTier = (points) => {
   const idx = TIERS.findIndex(t => t.key === getTier(points).key)
   return idx < TIERS.length - 1 ? TIERS[idx + 1] : null
 }
+
+// Single shared calculation for "how far into the CURRENT tier is this
+// customer" — every tier-progress bar/line/text in the app must read off
+// this, not recompute its own percentage, so the number on screen (e.g.
+// "379 / 1,000 pts to Gold") always agrees with wherever a bar/line is
+// drawn from the same `percent`. Progress is measured from the current
+// tier's own floor, not from 0 — reaching Silver always starts that tier's
+// bar back at 0%, same as a game XP bar resetting each level.
+export const getTierProgress = (points) => {
+  const p = points || 0
+  const tier = getTier(p)
+  const nextTier = getNextTier(p)
+  if (!nextTier) {
+    // Platinum (or any future top tier) — nothing left to progress toward.
+    return { tier, nextTier: null, currentTierMin: tier.min, nextTierMin: null, progressInTier: 0, tierRange: 0, percent: 100, pointsToNext: 0 }
+  }
+  const currentTierMin = tier.min
+  const nextTierMin = nextTier.min
+  const progressInTier = p - currentTierMin
+  const tierRange = nextTierMin - currentTierMin
+  const percent = Math.min(100, Math.max(0, (progressInTier / tierRange) * 100))
+  const pointsToNext = nextTierMin - p
+  return { tier, nextTier, currentTierMin, nextTierMin, progressInTier, tierRange, percent, pointsToNext }
+}

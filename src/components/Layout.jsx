@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { Pencil } from 'lucide-react'
+import { Pencil, QrCode, Upload } from 'lucide-react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { useAuthStore, useAppStore, useProductStore, useCustomerStore, useTransactionStore, useRefundStore, useReturnStore, useHoldStore, useCategoryStore, useStaffStore, useActivityLogStore } from '../store'
+import { useAuthStore, useAppStore, useProductStore, useCustomerStore, useTransactionStore, useRefundStore, useReturnStore, useHoldStore, useCategoryStore, useStaffStore, useActivityLogStore, useSettingsStore, useRewardStore } from '../store'
 import { useT, useBreakpoint, passwordError } from '../utils/helpers'
 import { useToast, ToastViewport } from '../utils/toast'
 import Modal from './Modal'
@@ -48,6 +48,47 @@ export default function Layout() {
   const [profileForm, setProfileForm] = useState({ name:'', currentPassword:'', password:'', confirmPassword:'' })
   const [profileSaving, setProfileSaving] = useState(false)
   const profileRef = useRef(null)
+
+  // GCash Settings (admin only) — upload/replace the store's GCash QR and
+  // set the account name shown at checkout. See src/components/Cart.jsx.
+  const { gcashQrSignedUrl, gcashAccountName } = useSettingsStore()
+  const [gcashModal, setGcashModal] = useState(false)
+  const [gcashNameDraft, setGcashNameDraft] = useState('')
+  const [gcashPreview, setGcashPreview] = useState(null)
+  const [gcashFile, setGcashFile] = useState(null)
+  const [gcashSaving, setGcashSaving] = useState(false)
+  const openGcashModal = () => {
+    setGcashNameDraft(gcashAccountName || '')
+    setGcashPreview(null)
+    setGcashFile(null)
+    setGcashModal(true)
+    setProfileMenuOpen(false)
+  }
+  const handleGcashFileChange = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!['image/png','image/jpeg'].includes(file.type)) return toast('Please choose a PNG or JPG image', 'error')
+    if (file.size > 2 * 1024 * 1024) return toast('Image must be under 2 MB', 'error')
+    setGcashFile(file)
+    setGcashPreview(URL.createObjectURL(file))
+  }
+  const handleGcashSave = async () => {
+    setGcashSaving(true)
+    try {
+      if (gcashFile) {
+        const { error } = await useSettingsStore.getState().uploadGcashQr(gcashFile)
+        if (error) { toast('Failed to upload QR image', 'error'); return }
+      }
+      if (gcashNameDraft.trim() !== (gcashAccountName || '')) {
+        const { error } = await useSettingsStore.getState().updateGcashAccountName(gcashNameDraft)
+        if (error) { toast('Failed to save account name', 'error'); return }
+      }
+      toast('GCash settings saved', 'success')
+      setGcashModal(false)
+    } finally {
+      setGcashSaving(false)
+    }
+  }
 
   useEffect(()=>{ setMobileNavOpen(false) },[location.pathname])
   useEffect(()=>{
@@ -98,6 +139,8 @@ export default function Layout() {
     useReturnStore.getState().fetchReturns()
     useHoldStore.getState().fetchHolds()
     useCategoryStore.getState().fetchCategories()
+    useSettingsStore.getState().fetchSettings()
+    useRewardStore.getState().fetchRedemptions()
     // Staff accounts are admin-only — `profiles` has no RLS restriction of
     // its own, so without this a cashier session would silently fetch the
     // full staff list despite having no route to it. Keep the fetch itself
@@ -324,6 +367,17 @@ export default function Layout() {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
                   {t('edit_profile')}
                 </button>
+                {role==='admin' && (
+                  <button onClick={openGcashModal} style={{
+                    width:'100%', display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:8,
+                    border:'none', background:'transparent', color:'var(--text)', cursor:'pointer', fontSize:14.5, fontWeight:500, textAlign:'left',
+                  }}
+                  onMouseEnter={e=>e.currentTarget.style.background='var(--bg3)'}
+                  onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                    <QrCode size={16} style={{flexShrink:0}}/>
+                    GCash Settings
+                  </button>
+                )}
                 <button onClick={async ()=>{ setProfileMenuOpen(false); await logout(); navigate('/login') }} style={{
                   width:'100%', display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:8,
                   border:'none', background:'transparent', color:'var(--red)', cursor:'pointer', fontSize:14.5, fontWeight:500, textAlign:'left',
@@ -384,6 +438,49 @@ export default function Layout() {
                   </svg>
                 )}
                 {profileSaving ? 'Saving...' : t('save')}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* GCash Settings Modal (admin only) */}
+      {gcashModal&&(
+        <Modal open onClose={()=>setGcashModal(false)} contentStyle={{width:'min(420px,92vw)'}}>
+          <div className="card animate-scale-in" style={{padding:28}}>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:20,display:'flex',alignItems:'center',gap:6}}><QrCode size={14} style={{color:'var(--blue)'}}/>GCash Settings</div>
+            <div style={{display:'flex',flexDirection:'column',gap:14}}>
+              <div>
+                <label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>GCash QR Code</label>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:10,padding:16,borderRadius:10,border:'1px dashed var(--border2)',background:'var(--bg3)'}}>
+                  {(gcashPreview || gcashQrSignedUrl) ? (
+                    <img src={gcashPreview || gcashQrSignedUrl} alt="GCash QR preview" style={{width:160,height:160,objectFit:'contain',borderRadius:8,background:'#fff'}}/>
+                  ) : (
+                    <div style={{width:160,height:160,borderRadius:8,background:'var(--bg4)',display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text3)'}}>
+                      <QrCode size={40}/>
+                    </div>
+                  )}
+                  <label className="btn-secondary" style={{display:'inline-flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12.5}}>
+                    <Upload size={13}/>{gcashQrSignedUrl ? 'Replace Image' : 'Upload Image'}
+                    <input type="file" accept="image/png,image/jpeg" hidden onChange={handleGcashFileChange}/>
+                  </label>
+                  <div style={{fontSize:10,color:'var(--text3)'}}>PNG or JPG, max 2 MB</div>
+                </div>
+              </div>
+              <div>
+                <label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>GCash Account Name</label>
+                <input className="input-field" type="text" value={gcashNameDraft} onChange={e=>setGcashNameDraft(e.target.value)} placeholder="Gapuz Computer Services"/>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:10,marginTop:20,justifyContent:'flex-end'}}>
+              <button onClick={()=>setGcashModal(false)} disabled={gcashSaving} className="btn-secondary">{t('cancel')}</button>
+              <button onClick={handleGcashSave} disabled={gcashSaving} className="btn-primary" style={{display:'flex',alignItems:'center',gap:8}}>
+                {gcashSaving && (
+                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                    <path d="M21 12a9 9 0 1 1-9-9"/>
+                  </svg>
+                )}
+                {gcashSaving ? 'Saving...' : t('save')}
               </button>
             </div>
           </div>

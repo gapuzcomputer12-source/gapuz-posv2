@@ -1,24 +1,27 @@
 import { useRef, useState, useEffect } from 'react'
 import { useReactToPrint } from 'react-to-print'
 import { Banknote, Smartphone, Zap, ShoppingCart, Package, AlertTriangle, Mail, Printer, Check, PauseCircle, X, Wrench } from 'lucide-react'
-import { useCartStore, useAuthStore, useTransactionStore, useProductStore, useCustomerStore } from '../store'
+import { useCartStore, useAuthStore, useTransactionStore, useProductStore, useCustomerStore, useSettingsStore } from '../store'
 import { supabase } from '../lib/supabaseClient'
 import { peso, fmtTxnId, useT, useBreakpoint } from '../utils/helpers'
 import { useToast } from '../utils/toast'
 import Receipt from './Receipt'
 import ProductThumb from './ProductThumb'
+import CustomerPicker from './CustomerPicker'
+import AddCustomerModal from './AddCustomerModal'
 import Modal from './Modal'
 
 const PAY = [{id:'Cash',label:'Cash',icon:Banknote},{id:'GCash',label:'GCash',icon:Smartphone}]
 
 export default function Cart({ products, customers, onHold, addedFlash }) {
-  const { items, payMethod, customerId, splitMode, split1Pay, split2Pay, split1Amt,
+  const { items, payMethod, customerId, customerChosen, splitMode, split1Pay, split2Pay, split1Amt,
           removeItem, removeSerialFromItem, setQty, setItemNote, clearCart, setPayMethod, setCustomer,
           setSplitMode, setSplit1Pay, setSplit2Pay, setSplit1Amt, getTotals } = useCartStore()
   const { user, role } = useAuthStore()
   const addTransaction = useTransactionStore(s=>s.addTransaction)
   const deductStock    = useProductStore(s=>s.deductStock)
   const addPoints      = useCustomerStore(s=>s.addPoints)
+  const { gcashQrSignedUrl, gcashAccountName } = useSettingsStore()
   const toast = useToast()
   const t     = useT()
   const { isMobile } = useBreakpoint()
@@ -38,6 +41,8 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
   }, [addedFlash])
 
   const [cashGiven,   setCashGiven]   = useState('')
+  const [gcashRef,       setGcashRef]       = useState('')
+  const [gcashRefTouched, setGcashRefTouched] = useState(false)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [step,        setStep]        = useState('method') // 'method' | 'processing' | 'success'
   const [changeDue,   setChangeDue]   = useState(0)
@@ -53,6 +58,14 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
   const totalItems = items.reduce((s,i)=>s+i.qty,0)
   const cust = customers.find(c=>c.id===customerId)
 
+  // How much of this sale goes through GCash — the full total for a plain
+  // GCash payment, or just the GCash-assigned portion for Split. 0 (and
+  // therefore no GCash panel/reference requirement) for a plain Cash sale.
+  const gcashAmount = splitMode
+    ? (split1Pay==='GCash' ? (parseFloat(split1Amt)||0) : split2Pay==='GCash' ? Math.max(0,totalInt-(parseFloat(split1Amt)||0)) : 0)
+    : (payMethod==='GCash' ? totalInt : 0)
+  const gcashRefValid = /^\d{13}$/.test(gcashRef)
+
   const [checkingOut, setCheckingOut] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState(null)
   const [noteDraft, setNoteDraft] = useState('')
@@ -62,7 +75,20 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
   // first click's request ever fires.
   const submittingRef = useRef(false)
 
-  const openCheckout = () => { if(!items.length) return; setStep('method'); setCheckoutOpen(true) }
+  const [addCustomerOpen, setAddCustomerOpen] = useState(false)
+  const [pickerInvalid, setPickerInvalid] = useState(false)
+  const pickerRef = useRef(null)
+
+  // Defensive, not just UI — the Checkout button is already disabled
+  // whenever !customerChosen, so this only matters for a non-click trigger
+  // (a future keyboard shortcut, etc.) slipping past that. Flashes the
+  // picker red and pulls focus to it instead of silently opening checkout
+  // with no customer decided.
+  const openCheckout = () => {
+    if(!items.length) return
+    if(!customerChosen){ setPickerInvalid(true); pickerRef.current?.focus(); return }
+    setStep('method'); setCheckoutOpen(true)
+  }
   const cancelCheckout = () => setCheckoutOpen(false)
 
   const handleCompletePayment = async () => {
@@ -71,6 +97,7 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
       if(!cashGiven.trim()){toast('Please enter the cash given','error');return}
       if(parseFloat(cashGiven)<totalInt){toast('Cash given is less than total!','error');return}
     }
+    if(gcashAmount>0 && !gcashRefValid){ setGcashRefTouched(true); toast('Please enter a valid 13-digit GCash reference number','error'); return }
     // Defensive: every serialized line's unit count must come from scanned
     // serials, never a bare qty — addSerialItem/removeSerialFromItem keep
     // these in sync, so this should never actually fire.
@@ -91,10 +118,17 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
           cashGiven:    payMethod==='Cash'?parseFloat(cashGiven):0,
           status:       'Completed',
           cashierName:  user?.user_metadata?.name||'Cashier',
+          gcashReference: gcashAmount>0?gcashRef:null,
           items:        [...items],
         }),
         new Promise(r=>setTimeout(r,650)),
       ])
+      if(txn?.duplicateGcashRef) {
+        setCheckingOut(false)
+        toast('This GCash reference number was already used in another transaction.','error')
+        setStep('method')
+        return
+      }
       if(!txn) { setCheckingOut(false); toast('Checkout failed — please try again','error'); setStep('method'); return }
 
       // Serials are stamped Sold BEFORE stock is deducted — if this fails,
@@ -143,7 +177,7 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
     setCheckoutOpen(false)
     setStep('method')
     clearCart(); setCashGiven(''); setSplitMode(false); setSplit1Amt(''); setEmailReceipt(false); setCustomerEmail('')
-    setChangeAcked(false); setLastTxn(null)
+    setChangeAcked(false); setLastTxn(null); setGcashRef(''); setGcashRefTouched(false)
   }
 
   const [sendingReceipt, setSendingReceipt] = useState(false)
@@ -247,10 +281,18 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
 
       {/* Customer */}
       <div style={{padding:'8px 12px',borderTop:border,flexShrink:0}}>
-        <select className="select-field" style={{fontSize:12}} value={customerId||''} onChange={e=>setCustomer(e.target.value?parseInt(e.target.value):null)}>
-          <option value="">{t('walk_in')}</option>
-          {customers.map(c=><option key={c.id} value={c.id}>{c.name} ({c.points} pts)</option>)}
-        </select>
+        <label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>Customer</label>
+        <CustomerPicker
+          ref={pickerRef}
+          customers={customers}
+          selectedId={customerId}
+          chosen={customerChosen}
+          invalid={pickerInvalid}
+          onClearInvalid={()=>setPickerInvalid(false)}
+          onSelectWalkIn={()=>setCustomer(null)}
+          onSelectCustomer={(id)=>setCustomer(id)}
+          onAddNew={()=>setAddCustomerOpen(true)}
+        />
       </div>
 
       {/* Totals & payment */}
@@ -266,10 +308,15 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
         </div>
 
         {/* Checkout */}
-        <button onClick={openCheckout} disabled={items.length===0} style={{width:'100%',padding:13,borderRadius:10,border:'none',background:items.length===0?'var(--bg4)':'var(--accent)',color:items.length===0?'var(--text3)':'var(--accent-dark)',fontWeight:800,fontSize:14,cursor:items.length===0?'not-allowed':'pointer',fontFamily:'inherit',transition:'all .18s'}}>
+        {items.length>0&&!customerChosen&&(
+          <div style={{fontSize:11,color:'var(--red)',fontWeight:600,textAlign:'center'}}>Select Walk-in Customer or a customer to continue.</div>
+        )}
+        <button onClick={openCheckout} disabled={items.length===0||!customerChosen} style={{width:'100%',padding:13,borderRadius:10,border:'none',background:(items.length===0||!customerChosen)?'var(--bg4)':'var(--accent)',color:(items.length===0||!customerChosen)?'var(--text3)':'var(--accent-dark)',fontWeight:800,fontSize:14,cursor:(items.length===0||!customerChosen)?'not-allowed':'pointer',fontFamily:'inherit',transition:'all .18s'}}>
           {t('checkout')} — {peso(totalInt)}
         </button>
       </div>
+
+      <AddCustomerModal open={addCustomerOpen} onClose={()=>setAddCustomerOpen(false)} onAdded={(c)=>setCustomer(c.id)}/>
 
       {/* ══════════ CHECKOUT MODAL ══════════ */}
       {checkoutOpen&&(
@@ -279,7 +326,10 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
           {step==='method'&&(
             <div className="card animate-scale-in" style={{width:'min(440px,94vw)',maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 50px rgba(0,0,0,0.25)'}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'18px 20px',borderBottom:border,flexShrink:0}}>
-                <div style={{fontSize:16,fontWeight:700,color:'var(--text)'}}>Checkout</div>
+                <div>
+                  <div style={{fontSize:16,fontWeight:700,color:'var(--text)'}}>Checkout</div>
+                  <div style={{fontSize:11.5,color:'var(--text3)',marginTop:2}}>Customer: <span style={{color:'var(--text2)',fontWeight:600}}>{cust?cust.name:'Walk-in Customer'}</span></div>
+                </div>
                 <button onClick={cancelCheckout} aria-label="Close" style={{width:28,height:28,borderRadius:8,border:'none',background:'var(--bg3)',color:'var(--text3)',cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
               </div>
 
@@ -344,11 +394,40 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
                     </div>
                     {cashGiven&&change<0&&<div style={{marginTop:8,fontSize:11.5,color:'var(--red)',fontWeight:600,display:'flex',alignItems:'center',gap:5}}><AlertTriangle size={13}/>Cash received is less than the total amount.</div>}
                   </div>
-                ) : (
-                  <div style={{textAlign:'center',background:'var(--bg3)',border,borderRadius:10,padding:'20px 16px'}}>
-                    <Smartphone size={28} style={{marginBottom:8,color:'var(--text2)'}}/>
-                    <div style={{fontWeight:700,fontSize:13.5,color:'var(--text)',marginBottom:4}}>Confirm GCash Payment</div>
-                    <div style={{fontSize:12,color:'var(--text3)'}}>Verify the customer's GCash payment of <strong style={{color:'var(--text2)'}}>{peso(totalInt)}</strong> before completing.</div>
+                ) : null}
+
+                {/* Pay with GCash — shown for a plain GCash sale, or a
+                    Split sale with a GCash-assigned portion > 0. Covers the
+                    QR + amount + reference number requirement from the
+                    "no payment gateway, just record proof" GCash feature. */}
+                {gcashAmount>0 && (
+                  <div>
+                    <div className="section-title" style={{marginBottom:8}}>Pay with GCash</div>
+                    <div style={{textAlign:'center',background:'var(--bg3)',border,borderRadius:10,padding:'18px 16px'}}>
+                      {gcashQrSignedUrl ? (
+                        <img src={gcashQrSignedUrl} alt="GCash QR" style={{width:180,height:180,objectFit:'contain',borderRadius:8,background:'#fff',margin:'0 auto 10px'}}/>
+                      ) : (
+                        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:6,marginBottom:10}}>
+                          <Smartphone size={28} style={{color:'var(--text2)'}}/>
+                          <div style={{fontSize:11.5,color:'var(--yellow)',fontWeight:600,maxWidth:260}}>No GCash QR uploaded. Ask the Administrator to add it in GCash Settings.</div>
+                        </div>
+                      )}
+                      {gcashAccountName && <div style={{fontSize:12.5,fontWeight:700,color:'var(--text)',marginBottom:4}}>{gcashAccountName}</div>}
+                      <div style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:800,fontSize:28,color:'var(--accent)',marginBottom:8}}>{peso(gcashAmount)}</div>
+                      <div style={{fontSize:11.5,color:'var(--text3)',lineHeight:1.5}}>Ask the customer to scan the QR, pay the exact amount, then enter the 13-digit reference number from their GCash receipt.</div>
+                    </div>
+                    <div style={{marginTop:10}}>
+                      <label style={{fontSize:10,color:'var(--text3)',display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'.5px'}}>GCash Reference No.</label>
+                      <input type="text" inputMode="numeric" maxLength={13} className="input-field" style={{fontFamily:"'JetBrains Mono',monospace",fontSize:14}}
+                        placeholder="1234567890123" value={gcashRef}
+                        onChange={e=>setGcashRef(e.target.value.replace(/\D/g,'').slice(0,13))}
+                        onBlur={()=>setGcashRefTouched(true)}/>
+                      {gcashRefTouched && !gcashRefValid && (
+                        <div style={{marginTop:6,fontSize:11.5,color:'var(--red)',fontWeight:600,display:'flex',alignItems:'center',gap:5}}>
+                          <AlertTriangle size={13}/>{gcashRef ? 'Reference number must be exactly 13 digits.' : 'GCash reference number is required.'}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -357,7 +436,8 @@ export default function Cart({ products, customers, onHold, addedFlash }) {
                 <button onClick={cancelCheckout} className="btn-secondary" style={{padding:12}}>Cancel</button>
                 {(() => {
                   const cashRequired = !splitMode && payMethod==='Cash' && (!cashGiven.trim() || change<0)
-                  const blocked = cashRequired || checkingOut
+                  const gcashRequired = gcashAmount>0 && !gcashRefValid
+                  const blocked = cashRequired || gcashRequired || checkingOut
                   return (
                     <button onClick={handleCompletePayment} disabled={blocked} className="btn-primary" style={{padding:12,opacity:blocked?0.5:1,cursor:blocked?'not-allowed':'pointer'}}>
                       Complete Payment — {peso(totalInt)}

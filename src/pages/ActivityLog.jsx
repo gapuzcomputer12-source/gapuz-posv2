@@ -14,13 +14,18 @@ const ACTION_BADGE = {
   rejected:    'badge-red',
   suspended:   'badge-red',
   reactivated: 'badge-green',
+  upgraded:    'badge-green',
   restocked:   'badge-yellow',
   submitted:   'badge-accent',
+  completed:   'badge-green',
+  redeemed:    'badge-accent',
+  claimed:     'badge-accent',
+  email:       'badge-blue',
   'logged in':  'badge-blue',
   'logged out': 'badge-gray',
 }
 
-const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund', serial: 'Serial', return: 'Return', session: 'Session' }
+const ENTITY_LABEL = { staff: 'Staff', product: 'Product', category: 'Category', customer: 'Customer', refund: 'Refund', serial: 'Serial', return: 'Return', session: 'Session', sale: 'Sale', settings: 'Settings', reward: 'Reward' }
 
 function Spinner({ size = 14, color = 'currentColor' }) {
   return (
@@ -51,7 +56,16 @@ export default function ActivityLog() {
     if (d.count != null) return `${d.count} serial${d.count===1?'':'s'}`
     if (d.serialNumber) return d.serialNumber
     if (d.reason) return `Reason: ${d.reason}`
-    if (d.total != null) return `₱${Number(d.total).toLocaleString()}`
+    if (d.decisionAction && d.emailStatus) {
+      const actionLabel = d.decisionAction.charAt(0).toUpperCase() + d.decisionAction.slice(1)
+      const emailPart = d.emailStatus === 'sent' ? 'customer notified' : d.emailStatus === 'skipped' ? 'no email on file' : 'email failed'
+      return `${actionLabel} – ${emailPart}`
+    }
+    if (d.emailStatus) return d.emailStatus === 'sent' ? `Email sent to ${d.email}` : d.emailStatus === 'skipped' ? 'No email on file' : 'Email could not be sent'
+    if (d.tierReached) return `Reached ${d.tierReached} · ${Number(d.points).toLocaleString()} pts`
+    if (d.tier) return `${d.tier.charAt(0).toUpperCase()}${d.tier.slice(1)} tier reward${d.redemptionNo ? ` · ${d.redemptionNo}` : ''}${d.customerName ? ` · ${d.customerName}` : ''}`
+    if (d.pointsUsed != null) return `${d.pointsUsed} pts${d.redemptionNo ? ` · ${d.redemptionNo}` : ''}${d.customerName ? ` · ${d.customerName}` : ''}`
+    if (d.total != null) return `₱${Number(d.total).toLocaleString()}${d.gcashReference ? ` · GCash Ref. No.: ${d.gcashReference}` : ''}`
     return ''
   }
 

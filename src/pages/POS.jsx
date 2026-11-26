@@ -76,7 +76,7 @@ export default function POS() {
   const CATEGORIES = ['All', ...categories.map(c=>c.name)]
   const catHex = (name) => BADGE_SWATCHES.find(s=>s.cls===(categories.find(c=>c.name===name)?.badgeColor||'badge-accent'))?.hex || '#34d399'
   const { theme }    = useAppStore()
-  const { items, addItem, addSerialItem, restoreItems, clearCart, setCustomer } = useCartStore()
+  const { items, customerId, customerChosen, addItem, addSerialItem, restoreItems, clearCart, setCustomer, unsetCustomer } = useCartStore()
   const { holds, removeHold, saveHold } = useHoldStore()
   const holdsPg = usePagination(holds)
   const toast = useToast()
@@ -229,12 +229,18 @@ export default function POS() {
   const handleHold = () => {
     if(!items.length) return
     const label = window.prompt(t('hold_label'),`Hold ${holds.length+1}`)
-    if(label!==null){saveHold(label,items,null);clearCart();toast(t('order_held')+' '+label,'info')}
+    if(label!==null){saveHold(label,items,customerId,customerChosen);clearCart();toast(t('order_held')+' '+label,'info')}
   }
 
+  // Restores exactly the customer state the hold was saved with — Walk-in
+  // explicitly chosen restores as Walk-in (customerChosen distinguishes
+  // that from "nothing was chosen", which restores back to the picker's
+  // empty placeholder instead of silently keeping whatever was selected
+  // before the restore).
   const restoreHold = hold => {
     restoreItems(hold.items)
-    if(hold.customerId) setCustomer(hold.customerId)
+    if(hold.customerChosen) setCustomer(hold.customerId)
+    else unsetCustomer()
     removeHold(hold.id)
     setShowHolds(false)
     toast('Order restored','success')

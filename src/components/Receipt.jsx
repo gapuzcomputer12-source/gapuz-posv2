@@ -41,6 +41,7 @@ const Receipt = forwardRef(function Receipt({ txn, role }, ref) {
           <div style={{display:'flex',justifyContent:'space-between',fontWeight:600}}><span>Change</span><span>{peso(txn.cashGiven-txn.total)}</span></div>
         </>}
         <div style={{marginTop:4,color:'#555'}}>Payment: {txn.payment}</div>
+        {txn.payment?.includes('GCash')&&<div style={{color:'#555'}}>GCash Ref. No.: {txn.gcashReference||'—'}</div>}
       </div>
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',marginBottom:10}}>
         <QRCodeSVG value={qrData} size={80}/>
